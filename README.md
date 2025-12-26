@@ -1,6 +1,7 @@
 # FSCB738TQ-Nextgen
 
 Standalone X-Plane plugin for the FSC B737 Throttle Quadrant. Focused on the Zibo B737, but supports other aircraft via aircraft profiles.
+No additional lua scripts required.
 
 ## Features
 - Supports FSC B737 Throttle Quadrant: SEMIPRO, PRO, MOTORIZED.
