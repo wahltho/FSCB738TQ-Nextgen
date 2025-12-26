@@ -9,7 +9,7 @@ No additional lua scripts required.
 - Calibration wizard for throttles, reversers, speedbrake, and flaps detents.
 - Throttle smoothing, deadband, and sync band to reduce noise/asymmetry.
 - Aircraft profile system (JSON) with exact tailnum matching.
-- Zibo profile included in `deploy/FSCB738TQ-Nextgen/profiles/`.
+- Zibo profile included in `FSCB738TQ-Nextgen/profiles/`.
 - Logging to file for diagnostics.
 
 ## Requirements
