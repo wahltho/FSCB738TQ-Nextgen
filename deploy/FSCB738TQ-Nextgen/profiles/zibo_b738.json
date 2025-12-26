@@ -1,0 +1,362 @@
+{
+  "profile_id": "zibo_b738",
+  "name": "Zibo 737-800X",
+  "version": 1,
+  "aircraft_match": {
+    "tailnums": ["ZB738", "B738", "B736", "B737", "738", "B739"]
+  },
+  "axes": {
+    "throttle1": {
+      "source_ref_min": "fsc.calib.throttle1_min",
+      "source_ref_max": "fsc.calib.throttle1_full",
+      "invert": false,
+      "target_range": [0.0, 1.0],
+      "targets": [
+        { "type": "dataref", "path": "laminar/B738/axis/throttle1" },
+        { "type": "dataref", "path": "sim/cockpit2/engine/actuators/throttle_ratio", "index": 0 }
+      ]
+    },
+    "throttle2": {
+      "source_ref_min": "fsc.calib.throttle2_min",
+      "source_ref_max": "fsc.calib.throttle2_full",
+      "invert": false,
+      "target_range": [0.0, 1.0],
+      "targets": [
+        { "type": "dataref", "path": "laminar/B738/axis/throttle2" },
+        { "type": "dataref", "path": "sim/cockpit2/engine/actuators/throttle_ratio", "index": 1 }
+      ]
+    },
+    "reverser1": {
+      "source_ref_min": "fsc.calib.reverser1_min",
+      "source_ref_max": "fsc.calib.reverser1_max",
+      "invert": false,
+      "target_range": [0.0, 1.0],
+      "targets": [
+        { "type": "dataref", "path": "laminar/B738/flt_ctrls/reverse_lever1" }
+      ]
+    },
+    "reverser2": {
+      "source_ref_min": "fsc.calib.reverser2_min",
+      "source_ref_max": "fsc.calib.reverser2_max",
+      "invert": false,
+      "target_range": [0.0, 1.0],
+      "targets": [
+        { "type": "dataref", "path": "laminar/B738/flt_ctrls/reverse_lever2" }
+      ]
+    }
+  },
+  "switches": {
+    "fuel_cutoff_1": {
+      "type": "latching",
+      "positions": {
+        "on": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/engine/mixture1_idle" }
+          ]
+        },
+        "off": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/engine/mixture1_cutoff" }
+          ]
+        }
+      }
+    },
+    "fuel_cutoff_2": {
+      "type": "latching",
+      "positions": {
+        "on": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/engine/mixture2_idle" }
+          ]
+        },
+        "off": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/engine/mixture2_cutoff" }
+          ]
+        }
+      }
+    },
+    "parking_brake": {
+      "type": "latching_toggle",
+      "state_dataref": "laminar/B738/parking_brake_pos",
+      "state_on_min": 0.5,
+      "positions": {
+        "on": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/park_brake_on_off" }
+          ]
+        },
+        "off": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/park_brake_on_off" }
+          ]
+        }
+      }
+    },
+    "toga_left": {
+      "type": "momentary",
+      "on_press": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/autopilot/left_toga_press", "phase": "begin" }
+        ]
+      },
+      "on_release": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/autopilot/left_toga_press", "phase": "end" }
+        ]
+      }
+    },
+    "autothrottle_disengage": {
+      "type": "momentary",
+      "on_press": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/autopilot/left_at_dis_press", "phase": "begin" }
+        ]
+      },
+      "on_release": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/autopilot/left_at_dis_press", "phase": "end" }
+        ]
+      }
+    },
+    "gear_horn_cutout": {
+      "type": "momentary",
+      "on_press": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/alert/gear_horn_cutout", "phase": "begin" }
+        ]
+      },
+      "on_release": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/alert/gear_horn_cutout", "phase": "end" }
+        ]
+      }
+    },
+    "pitch_trim_wheel": {
+      "type": "encoder",
+      "on_cw": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/flight_controls/pitch_trim_up" }
+        ]
+      },
+      "on_ccw": {
+        "actions": [
+          { "type": "command", "path": "laminar/B738/flight_controls/pitch_trim_down" }
+        ]
+      }
+    },
+    "el_trim_guard": {
+      "type": "latching",
+      "positions": {
+        "on": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/toggle_switch/el_trim_w_guard_on" }
+          ]
+        },
+        "off": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/toggle_switch/el_trim_w_guard_off" }
+          ]
+        }
+      }
+    },
+    "ap_trim_guard": {
+      "type": "latching",
+      "positions": {
+        "on": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/toggle_switch/ap_trim_w_guard_on" }
+          ]
+        },
+        "off": {
+          "actions": [
+            { "type": "command", "path": "laminar/B738/toggle_switch/ap_trim_w_guard_off" }
+          ]
+        }
+      }
+    }
+  },
+  "indicators": {
+    "parking_brake_light": {
+      "type": "led",
+      "source": { "dataref": "laminar/B738/parking_brake_pos" },
+      "on_when": { "min": 0.5 },
+      "invert": false
+    },
+    "backlight": {
+      "type": "led",
+      "source": { "dataref": "laminar/B738/electric/batbus_status" },
+      "on_when": { "min": 1.0 },
+      "invert": false
+    }
+  },
+  "behaviors": {
+    "speedbrake": {
+      "source_axis": "speedbrake",
+      "invert_ref": "fsc.speed_brake_reversed",
+      "ratio_dataref": "sim/cockpit2/controls/speedbrake_ratio",
+      "detents": {
+        "down": {
+          "source_ref": "fsc.calib.spoilers_down",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "sim/flight_controls/speed_brakes_up_one" }
+          ],
+          "confirm_value": 0.0
+        },
+        "armed": {
+          "source_ref": "fsc.calib.spoilers_armed",
+          "tolerance": 2,
+          "actions_if_ratio_zero": [
+            { "type": "command", "path": "sim/flight_controls/speed_brakes_down_one" }
+          ],
+          "actions_if_ratio_nonzero": [
+            { "type": "command", "path": "sim/flight_controls/speed_brakes_up_one" }
+          ],
+          "confirm_value": -0.5
+        },
+        "up": {
+          "source_ref": "fsc.calib.spoilers_up",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "sim/flight_controls/speed_brakes_down_one" }
+          ],
+          "confirm_value": 1.0
+        }
+      },
+      "analog": {
+        "source_ref_min": "fsc.calib.spoilers_min",
+        "source_ref_max": "fsc.calib.spoilers_detent",
+        "targets": [
+          {
+            "type": "dataref",
+            "path": "laminar/B738/flt_ctrls/speedbrake_lever",
+            "target_range": [0.0889, 0.667]
+          },
+          {
+            "type": "dataref",
+            "path": "sim/cockpit2/controls/speedbrake_ratio",
+            "target_range": [0.0, 0.99]
+          }
+        ]
+      }
+    },
+    "flaps": {
+      "source_axis": "flaps",
+      "mode": "nearest",
+      "positions": [
+        {
+          "name": "flaps_0",
+          "source_ref": "fsc.calib.flaps_00",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_0" }
+          ]
+        },
+        {
+          "name": "flaps_1",
+          "source_ref": "fsc.calib.flaps_01",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_1" }
+          ]
+        },
+        {
+          "name": "flaps_2",
+          "source_ref": "fsc.calib.flaps_02",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_2" }
+          ]
+        },
+        {
+          "name": "flaps_5",
+          "source_ref": "fsc.calib.flaps_05",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_5" }
+          ]
+        },
+        {
+          "name": "flaps_10",
+          "source_ref": "fsc.calib.flaps_10",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_10" }
+          ]
+        },
+        {
+          "name": "flaps_15",
+          "source_ref": "fsc.calib.flaps_15",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_15" }
+          ]
+        },
+        {
+          "name": "flaps_25",
+          "source_ref": "fsc.calib.flaps_25",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_25" }
+          ]
+        },
+        {
+          "name": "flaps_30",
+          "source_ref": "fsc.calib.flaps_30",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_30" }
+          ]
+        },
+        {
+          "name": "flaps_40",
+          "source_ref": "fsc.calib.flaps_40",
+          "tolerance": 2,
+          "actions": [
+            { "type": "command", "path": "laminar/B738/push_button/flaps_40" }
+          ]
+        }
+      ]
+    },
+    "motorized": {
+      "enabled": true,
+      "throttle_follow": {
+        "lock_dataref": "laminar/B738/autopilot/lock_throttle",
+        "arm_dataref": "laminar/B738/autopilot/autothrottle_arm_pos",
+        "lever_dataref": "laminar/B738/engine/thrust12_leveler",
+        "motor_throttle1_min_ref": "fsc.motor.throttle1_min",
+        "motor_throttle1_max_ref": "fsc.motor.throttle1_max",
+        "motor_throttle2_min_ref": "fsc.motor.throttle2_min",
+        "motor_throttle2_max_ref": "fsc.motor.throttle2_max",
+        "update_rate_ref": "fsc.motor.throttle_update_rate_sec"
+      },
+      "speedbrake_motor": {
+        "ratio_dataref": "sim/cockpit2/controls/speedbrake_ratio",
+        "arm_ref": "fsc.calib.spoilers_armed",
+        "up_ref": "fsc.calib.spoilers_up",
+        "tolerance": 3,
+        "ratio_up_min": 0.99,
+        "ratio_down_max": 0.01,
+        "motor_down_ref": "fsc.motor.spoilers_down",
+        "motor_up_ref": "fsc.motor.spoilers_up",
+        "hold_ms": 1500
+      },
+      "trim_indicator": {
+        "wheel_dataref": "laminar/B738/flt_ctrls/trim_wheel",
+        "wheel_min_ref": "fsc.motor.trim_wheel_02",
+        "wheel_max_ref": "fsc.motor.trim_wheel_17",
+        "arrow_min_ref": "fsc.motor.trim_arrow_02",
+        "arrow_max_ref": "fsc.motor.trim_arrow_17",
+        "hold_ms": 1500
+      }
+    }
+  },
+  "sync": {
+    "defer_until_datarefs": true,
+    "startup_delay_sec": 10,
+    "resync_on_aircraft_loaded": true,
+    "resync_interval_sec": 1.0
+  },
+  "notes": "Profile uses prefs for calibration and motorized ranges. Speedbrake uses detent commands plus analog mapping between MIN and DETENT. Flaps use nearest detent with calibrated values."
+}

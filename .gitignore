@@ -39,3 +39,23 @@
 
 # debug information files
 *.dwo
+
+# Project-specific
+__pycache__/
+logs/
+.venv/
+.venv*/
+qt.conf
+*.pcapng
+build/
+build-*/
+cmake-build-*/
+*.log
+.DS_Store
+
+# Deploy artifacts (build outputs)
+deploy/**/64/
+*.xpl
+
+# Local-only docs
+Documentation/FSCTQ Protokoll.pdf
