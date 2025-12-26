@@ -5860,17 +5860,7 @@ int reloadPrefsCommandHandler(XPLMCommandRef cmd, XPLMCommandPhase phase, void* 
     return 1;
 }
 
-}  // namespace
-
-PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
-    std::strncpy(outName, PLUGIN_NAME, 255);
-    outName[255] = '\0';
-    std::strncpy(outSig, PLUGIN_SIGNATURE, 255);
-    outSig[255] = '\0';
-    std::string desc = std::string(PLUGIN_DESC) + " (v" + kPluginVersion + ")";
-    std::strncpy(outDesc, desc.c_str(), 255);
-    outDesc[255] = '\0';
-
+static void fscPluginStartCommon(bool registerFlightLoop) {
     g_prefs = loadPrefs();
     logLine("Prefs loaded from " + getPrefsPath());
     openLogFileFromPrefs();
@@ -5898,12 +5888,13 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
     XPLMRegisterCommandHandler(g_cmdReloadPrefs, reloadPrefsCommandHandler, 1, nullptr);
     createPluginMenu();
 
-    XPLMRegisterFlightLoopCallback(flightLoopCallback, -1.0f, nullptr);
+    if (registerFlightLoop) {
+        XPLMRegisterFlightLoopCallback(flightLoopCallback, -1.0f, nullptr);
+    }
     logLine("Started");
-    return 1;
 }
 
-PLUGIN_API void XPluginStop() {
+static void fscPluginStopCommon(bool unregisterFlightLoop) {
     stopFsc();
     destroyFscWindow();
     destroyPluginMenu();
@@ -5927,28 +5918,89 @@ PLUGIN_API void XPluginStop() {
         XPLMUnregisterCommandHandler(g_cmdReloadPrefs, reloadPrefsCommandHandler, 1, nullptr);
         g_cmdReloadPrefs = nullptr;
     }
-    XPLMUnregisterFlightLoopCallback(flightLoopCallback, nullptr);
+    if (unregisterFlightLoop) {
+        XPLMUnregisterFlightLoopCallback(flightLoopCallback, nullptr);
+    }
     if (g_fileLog.is_open()) {
         g_fileLog.close();
     }
 }
 
-PLUGIN_API void XPluginDisable() {
+static void fscPluginDisableCommon() {
     g_pluginEnabled = false;
     stopFsc();
     logLine("Disabled");
 }
 
-PLUGIN_API int XPluginEnable() {
+static int fscPluginEnableCommon() {
     g_pluginEnabled = true;
     updateFscLifecycle("plugin enable");
     logLine("Enabled");
     return 1;
 }
 
-PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*inFromWho*/, int inMessage, void* /*inParam*/) {
+static void fscPluginReceiveMessageCommon(int inMessage) {
     if (inMessage == XPLM_MSG_AIRPORT_LOADED || inMessage == XPLM_MSG_PLANE_LOADED) {
         refreshFscProfile(true);
         updateFscLifecycle("aircraft load");
     }
 }
+
+}  // namespace
+
+#if defined(FSC_EMBEDDED)
+void FscEmbedded_Start() {
+    fscPluginStartCommon(true);
+}
+
+void FscEmbedded_Stop() {
+    fscPluginStopCommon(true);
+}
+
+void FscEmbedded_Enable() {
+    fscPluginEnableCommon();
+}
+
+void FscEmbedded_Disable() {
+    fscPluginDisableCommon();
+}
+
+void FscEmbedded_OnMessage(int inMessage) {
+    fscPluginReceiveMessageCommon(inMessage);
+}
+
+void FscEmbedded_ReloadPrefs() {
+    reloadPrefs();
+}
+#endif
+
+#if !defined(FSC_EMBEDDED)
+PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
+    std::strncpy(outName, PLUGIN_NAME, 255);
+    outName[255] = '\0';
+    std::strncpy(outSig, PLUGIN_SIGNATURE, 255);
+    outSig[255] = '\0';
+    std::string desc = std::string(PLUGIN_DESC) + " (v" + kPluginVersion + ")";
+    std::strncpy(outDesc, desc.c_str(), 255);
+    outDesc[255] = '\0';
+
+    fscPluginStartCommon(true);
+    return 1;
+}
+
+PLUGIN_API void XPluginStop() {
+    fscPluginStopCommon(true);
+}
+
+PLUGIN_API void XPluginDisable() {
+    fscPluginDisableCommon();
+}
+
+PLUGIN_API int XPluginEnable() {
+    return fscPluginEnableCommon();
+}
+
+PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*inFromWho*/, int inMessage, void* /*inParam*/) {
+    fscPluginReceiveMessageCommon(inMessage);
+}
+#endif
