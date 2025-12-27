@@ -16,9 +16,17 @@ No additional lua scripts required.
 - X-Plane 12.
 - FSC B737 Throttle Quadrant connected via serial (FTDI).
 
+## Support Status
+- Supported platforms: macOS (universal), Windows x64, Linux x86_64.
+- Tested so far: Windows + FSC B737 Throttle Quadrant SEMIPRO only.
+- Other platform/hardware combinations are currently untested.
+
+## Disclaimer
+Provided "as is", without warranty of any kind. Use at your own risk; no liability for damages.
+
 ## Install
 1. Copy the plugin folder into X-Plane:
-   - From this repo: `deploy/FSCB738TQ-Nextgen` -> `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen`
+   - From zip file: `FSCB738TQ-Nextgen` -> `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen`
 2. The `64/` folder contains the platform binaries:
    - `mac.xpl`, `lin.xpl`, `win.xpl`
 3. Start X-Plane and open **Plugins -> FSCB738TQ-Nextgen**.

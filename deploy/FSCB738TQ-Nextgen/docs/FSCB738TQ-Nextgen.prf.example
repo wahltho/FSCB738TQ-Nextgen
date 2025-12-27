@@ -1,0 +1,69 @@
+# FSCB738TQ-Nextgen.prf
+# Target path (X-Plane): <X-Plane>/Output/preferences/FSCB738TQ-Nextgen.prf
+# Purpose: FSC B738 Throttle Quadrant only.
+
+# -------------------------------------------------------------------
+# FSC B738 Throttle Quadrant
+# -------------------------------------------------------------------
+fsc.enabled=1
+fsc.type=SEMIPRO
+fsc.port=COM3
+fsc.speed_brake_reversed=0
+fsc.fuel_lever_inverted=0
+# Throttle noise reduction (helps avoid false asymmetry / A/T dropouts)
+fsc.throttle_smooth_ms=60
+fsc.throttle_deadband=1
+fsc.throttle_sync_band=0.015
+fsc.debug=0
+fsc.baud=19200
+fsc.data_bits=8
+fsc.parity=none
+fsc.stop_bits=1
+fsc.dtr=1
+fsc.rts=1
+fsc.xonxoff=0
+
+# Calibration values (example from current calibration; replace via wizard if needed)
+fsc.calib.spoilers_down=32
+fsc.calib.spoilers_armed=80
+fsc.calib.spoilers_min=106
+fsc.calib.spoilers_detent=178
+fsc.calib.spoilers_up=228
+fsc.calib.throttle1_min=44
+fsc.calib.throttle1_full=187
+fsc.calib.throttle2_min=41
+fsc.calib.throttle2_full=184
+fsc.calib.reverser1_min=0
+fsc.calib.reverser1_max=104
+fsc.calib.reverser2_min=0
+fsc.calib.reverser2_max=98
+fsc.calib.flaps_00=25
+fsc.calib.flaps_01=49
+fsc.calib.flaps_02=71
+fsc.calib.flaps_05=89
+fsc.calib.flaps_10=107
+fsc.calib.flaps_15=125
+fsc.calib.flaps_25=149
+fsc.calib.flaps_30=183
+fsc.calib.flaps_40=223
+
+# -------------------------------------------------------------------
+# Motorized tuning (optional, MOTORIZED only; defaults shown)
+# -------------------------------------------------------------------
+fsc.motor.spoilers_down=0
+fsc.motor.spoilers_up=206
+fsc.motor.throttle1_min=47
+fsc.motor.throttle1_max=210
+fsc.motor.throttle2_min=47
+fsc.motor.throttle2_max=210
+fsc.motor.trim_arrow_02=93
+fsc.motor.trim_arrow_17=219
+fsc.motor.trim_wheel_02=-0.76
+fsc.motor.trim_wheel_17=0.84
+fsc.motor.throttle_update_rate_sec=0.07
+
+# -------------------------------------------------------------------
+# Logging
+# -------------------------------------------------------------------
+log.enabled=1
+log.file=fscb738tq_nextgen.log
