@@ -285,6 +285,9 @@ std::atomic<bool> g_fscRunning{false};
 std::atomic<bool> g_fscResyncPending{false};
 std::atomic<bool> g_fscAxisResyncPending{false};
 std::chrono::steady_clock::time_point g_fscAxisResyncDue{};
+std::atomic<bool> g_fscAxisResyncSecondPending{false};
+std::chrono::steady_clock::time_point g_fscAxisResyncSecondDue{};
+constexpr float kFscAxisResyncSecondDelaySec = 10.0f;
 std::thread g_fscThread;
 std::atomic<intptr_t> g_fscFd{-1};
 std::mutex g_fscIoMutex;
@@ -2986,6 +2989,8 @@ static bool refreshFscProfile(bool logMissing) {
     g_fscResyncPending.store(false);
     g_fscAxisResyncPending.store(false);
     g_fscAxisResyncDue = std::chrono::steady_clock::time_point{};
+    g_fscAxisResyncSecondPending.store(false);
+    g_fscAxisResyncSecondDue = std::chrono::steady_clock::time_point{};
     g_fscDeferredInit.pending = false;
 
     if (!g_fscProfileValid.load()) {
@@ -3956,9 +3961,17 @@ float flightLoopCallback(
                     }
                 }
             }
+            bool didAxisResync = false;
             if (g_fscAxisResyncPending.load() && now >= g_fscAxisResyncDue) {
                 resyncFscDetentAxes();
                 g_fscAxisResyncPending.store(false);
+                didAxisResync = true;
+            }
+            if (g_fscAxisResyncSecondPending.load() && now >= g_fscAxisResyncSecondDue) {
+                if (!didAxisResync) {
+                    resyncFscDetentAxes();
+                }
+                g_fscAxisResyncSecondPending.store(false);
             }
             processFscOutputs(snapshot);
             processFscState(snapshot);
@@ -4570,6 +4583,7 @@ static bool resyncFscLatchingInputs(const FscState& state) {
 
 static void scheduleFscAxisResync() {
     g_fscAxisResyncPending.store(true);
+    g_fscAxisResyncSecondPending.store(false);
     {
         std::lock_guard<std::mutex> lock(g_fscMutex);
         g_fscState.flaps = -1;
@@ -4579,9 +4593,22 @@ static void scheduleFscAxisResync() {
     if (delay < 0.0f) {
         delay = 0.0f;
     }
+    float secondDelay = kFscAxisResyncSecondDelaySec;
+    if (secondDelay < 0.0f) {
+        secondDelay = 0.0f;
+    }
     auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<float>(delay));
-    g_fscAxisResyncDue = std::chrono::steady_clock::now() + offset;
+    auto now = std::chrono::steady_clock::now();
+    g_fscAxisResyncDue = now + offset;
+    if (secondDelay > 0.0f) {
+        auto extra = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<float>(secondDelay));
+        g_fscAxisResyncSecondDue = g_fscAxisResyncDue + extra;
+        g_fscAxisResyncSecondPending.store(true);
+    } else {
+        g_fscAxisResyncSecondDue = std::chrono::steady_clock::time_point{};
+    }
 }
 
 static bool resyncFscDetentAxes() {
