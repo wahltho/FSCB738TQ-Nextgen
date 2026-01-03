@@ -4570,6 +4570,11 @@ static bool resyncFscLatchingInputs(const FscState& state) {
 
 static void scheduleFscAxisResync() {
     g_fscAxisResyncPending.store(true);
+    {
+        std::lock_guard<std::mutex> lock(g_fscMutex);
+        g_fscState.flaps = -1;
+        g_fscState.speedbrake = -1;
+    }
     float delay = g_fscProfileRuntime.sync.startupDelaySec;
     if (delay < 0.0f) {
         delay = 0.0f;
