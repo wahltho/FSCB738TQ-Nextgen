@@ -15,6 +15,7 @@ fsc.throttle_smooth_ms=60
 fsc.throttle_deadband=1
 fsc.throttle_sync_band=0.015
 fsc.debug=0
+fsc.raw_log=0
 fsc.baud=19200
 fsc.data_bits=8
 fsc.parity=none

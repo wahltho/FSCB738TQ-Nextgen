@@ -19,7 +19,8 @@ Provided "as is", without warranty of any kind. Use at your own risk; no liabili
   - `fsc.port=COM3` (or `/dev/tty.usbserial` on mac/Linux)
   - Serial defaults: `baud=19200`, `data_bits=8`, `parity=none`, `stop_bits=1`, `dtr=1`, `rts=1`, `xonxoff=0`
   - `fsc.fuel_lever_inverted=0|1` (invert the active-low fuel levers)
-  - `fsc.debug=0|1` (enable extra logging + RAW capture on connect)
+  - `fsc.debug=0|1` (enable extra logging + short RAW capture on connect)
+  - `fsc.raw_log=0|1` (continuous RAW log, rotated)
 - After editing prefs in-flight: run command `FSCB738TQ/reload_prefs` to re-open the port and reload settings.
 
 ## Commands (X-Plane)
@@ -43,6 +44,8 @@ Menus:
 - With `fsc.debug=1`, the plugin:
   - Captures 10s of RAW serial bytes on connect (`FSC RAW: ...`).
   - Logs reverser mapping: `FSC DBG: rev1 raw=34 mapped=1.00 min=17 max=34`.
+- With `fsc.raw_log=1`, the plugin:
+  - Writes a continuous RAW RX/TX stream to `fscb738tq_nextgen_raw.log` (rotates at ~5MB, keeps 3 backups).
 - Log location: `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/log/fscb738tq_nextgen.log`.
 
 ## Datarefs / outputs (FSC)
@@ -56,7 +59,7 @@ Menus:
 ## Pref keys (FSC excerpt)
 - Enable/type/port: `fsc.enabled`, `fsc.type=SEMIPRO|PRO|MOTORIZED`, `fsc.port`.
 - Serial: `fsc.baud`, `fsc.data_bits`, `fsc.parity`, `fsc.stop_bits`, `fsc.dtr`, `fsc.rts`, `fsc.xonxoff`.
-- Behavior: `fsc.fuel_lever_inverted`, `fsc.speed_brake_reversed`, `fsc.debug`.
+- Behavior: `fsc.fuel_lever_inverted`, `fsc.speed_brake_reversed`, `fsc.debug`, `fsc.raw_log`.
 - Throttle stability: `fsc.throttle_smooth_ms`, `fsc.throttle_deadband`, `fsc.throttle_sync_band`.
 - Calibration values: `fsc.calib.*` (spoilers, throttles, reversers, flaps for SemiPro).
 - Motorized tuning (if applicable): `fsc.motor.*` (speedbrake positions, trim indicator, etc.).
@@ -150,6 +153,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 **sync**
 - `defer_until_datarefs`: wait for aircraft datarefs before applying.
 - `startup_delay_sec`: extra delay to allow aircraft init.
+- `axis_resync_second_delay_sec`: optional extra detent-axis resync delay after startup (0 disables).
 - `resync_on_aircraft_loaded`: re-apply profile on aircraft load.
 - `resync_interval_sec`: periodic resync (seconds).
 

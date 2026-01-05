@@ -150,6 +150,7 @@ struct Prefs {
         int throttleDeadband = 1;
         float throttleSyncBand = 0.015f;
         bool debug = false;
+        bool rawLog = false;
         FscSerial serial;
         FscCalib calib;
         FscMotorCalib motor;
@@ -159,6 +160,20 @@ struct Prefs {
 bool g_pluginEnabled = false;
 std::ofstream g_fileLog;
 std::mutex g_logMutex;
+enum class RawLogDir {
+    None,
+    Rx,
+    Tx,
+};
+std::ofstream g_fscRawLog;
+std::mutex g_fscRawLogMutex;
+std::atomic<bool> g_fscRawLogActive{false};
+std::chrono::steady_clock::time_point g_fscRawLogStart{};
+std::chrono::steady_clock::time_point g_fscRawLogLineStart{};
+std::string g_fscRawLogLine;
+size_t g_fscRawLogLineBytes = 0;
+size_t g_fscRawLogBytes = 0;
+RawLogDir g_fscRawLogLineDir = RawLogDir::None;
 Prefs g_prefs;
 
 XPLMCommandRef g_cmdFscCalibStart = nullptr;
@@ -190,6 +205,7 @@ XPWidgetID g_fscFieldThrottleSmoothMs = nullptr;
 XPWidgetID g_fscFieldThrottleDeadband = nullptr;
 XPWidgetID g_fscFieldThrottleSyncBand = nullptr;
 XPWidgetID g_fscCheckDebug = nullptr;
+XPWidgetID g_fscCheckRawLog = nullptr;
 XPWidgetID g_fscFieldMotorSpoilersDown = nullptr;
 XPWidgetID g_fscFieldMotorSpoilersUp = nullptr;
 XPWidgetID g_fscFieldMotorThrottle1Min = nullptr;
@@ -287,7 +303,6 @@ std::atomic<bool> g_fscAxisResyncPending{false};
 std::chrono::steady_clock::time_point g_fscAxisResyncDue{};
 std::atomic<bool> g_fscAxisResyncSecondPending{false};
 std::chrono::steady_clock::time_point g_fscAxisResyncSecondDue{};
-constexpr float kFscAxisResyncSecondDelaySec = 10.0f;
 std::thread g_fscThread;
 std::atomic<intptr_t> g_fscFd{-1};
 std::mutex g_fscIoMutex;
@@ -965,6 +980,7 @@ struct FscMotorizedBehavior {
 struct FscSyncSettings {
     bool deferUntilDatarefs = true;
     int startupDelaySec = 10;
+    float axisResyncSecondDelaySec = 10.0f;
     bool resyncOnAircraftLoaded = true;
     float resyncIntervalSec = 1.0f;
 };
@@ -1184,6 +1200,7 @@ static void logFscActionList(const std::string& prefix, const std::vector<FscAct
 static void logFscProfileDetails(const FscProfileRuntime& profile) {
     logLine("FSC: profile sync: defer_until_datarefs=" + bool01(profile.sync.deferUntilDatarefs) +
             ", startup_delay_sec=" + std::to_string(profile.sync.startupDelaySec) +
+            ", axis_resync_second_delay_sec=" + std::to_string(profile.sync.axisResyncSecondDelaySec) +
             ", resync_on_aircraft_loaded=" + bool01(profile.sync.resyncOnAircraftLoaded) +
             ", resync_interval_sec=" + std::to_string(profile.sync.resyncIntervalSec));
 
@@ -2054,11 +2071,15 @@ static void parseSyncSettings(const JsonValue& obj, FscSyncSettings& out, const 
         profileError(errors, ctx + ": sync must be object");
         return;
     }
-    checkAllowedKeys(obj, {"defer_until_datarefs", "startup_delay_sec", "resync_on_aircraft_loaded", "resync_interval_sec"}, ctx, errors);
+    checkAllowedKeys(obj, {"defer_until_datarefs", "startup_delay_sec", "axis_resync_second_delay_sec",
+                           "resync_on_aircraft_loaded", "resync_interval_sec"}, ctx, errors);
     readBoolField(obj, "defer_until_datarefs", false, out.deferUntilDatarefs, ctx, errors);
     double v = 0.0;
     if (readNumberField(obj, "startup_delay_sec", false, v, ctx, errors)) {
         out.startupDelaySec = static_cast<int>(v);
+    }
+    if (readNumberField(obj, "axis_resync_second_delay_sec", false, v, ctx, errors)) {
+        out.axisResyncSecondDelaySec = static_cast<float>(v);
     }
     readBoolField(obj, "resync_on_aircraft_loaded", false, out.resyncOnAircraftLoaded, ctx, errors);
     if (readNumberField(obj, "resync_interval_sec", false, v, ctx, errors)) {
@@ -2450,6 +2471,7 @@ Prefs loadPrefs() {
     prefs.fsc.throttleDeadband = 1;
     prefs.fsc.throttleSyncBand = 0.015f;
     prefs.fsc.debug = false;
+    prefs.fsc.rawLog = false;
     prefs.fsc.serial.baud = 115200;
     prefs.fsc.serial.dataBits = 8;
     prefs.fsc.serial.stopBits = 1;
@@ -2502,6 +2524,7 @@ Prefs loadPrefs() {
         else if (key == "fsc.throttle_deadband") prefs.fsc.throttleDeadband = std::stoi(val);
         else if (key == "fsc.throttle_sync_band") prefs.fsc.throttleSyncBand = std::stof(val);
         else if (key == "fsc.debug") parseBool(val, prefs.fsc.debug);
+        else if (key == "fsc.raw_log") parseBool(val, prefs.fsc.rawLog);
         else if (key == "fsc.baud") prefs.fsc.serial.baud = std::stoi(val);
         else if (key == "fsc.data_bits") prefs.fsc.serial.dataBits = std::stoi(val);
         else if (key == "fsc.parity") parseFscParity(val, prefs.fsc.serial.parity);
@@ -2642,6 +2665,7 @@ static std::vector<std::string> buildDefaultPrefsLines(const Prefs& prefs) {
     lines.push_back("fsc.throttle_deadband=" + std::to_string(prefs.fsc.throttleDeadband));
     lines.push_back("fsc.throttle_sync_band=" + std::to_string(prefs.fsc.throttleSyncBand));
     lines.push_back("fsc.debug=" + bool01(prefs.fsc.debug));
+    lines.push_back("fsc.raw_log=" + bool01(prefs.fsc.rawLog));
     lines.push_back("fsc.baud=" + std::to_string(prefs.fsc.serial.baud));
     lines.push_back("fsc.data_bits=" + std::to_string(prefs.fsc.serial.dataBits));
     lines.push_back("fsc.parity=" + fscParityToString(prefs.fsc.serial.parity));
@@ -2718,6 +2742,156 @@ std::string hexByte(uint8_t v) {
     oss << "0x" << std::uppercase << std::hex << std::setw(2) << std::setfill('0')
         << static_cast<int>(v);
     return oss.str();
+}
+
+static std::string rawLogFileName() {
+    std::string base = g_prefs.logfileName.empty() ? std::string(PLUGIN_LOG_NAME) : g_prefs.logfileName;
+    auto dot = base.rfind('.');
+    if (dot == std::string::npos) {
+        return base + "_raw";
+    }
+    return base.substr(0, dot) + "_raw" + base.substr(dot);
+}
+
+static std::string rawLogPath() {
+    return makePluginPath("Resources/plugins/" + std::string(PLUGIN_DIR) + "/log/" + rawLogFileName());
+}
+
+static void rotateRawLogLocked() {
+    if (g_fscRawLog.is_open()) {
+        g_fscRawLog.close();
+    }
+    constexpr int kMaxFiles = 3;
+    std::string base = rawLogPath();
+    std::error_code ec;
+    std::filesystem::remove(base + "." + std::to_string(kMaxFiles), ec);
+    for (int i = kMaxFiles - 1; i >= 1; --i) {
+        std::string from = base + "." + std::to_string(i);
+        std::string to = base + "." + std::to_string(i + 1);
+        if (std::filesystem::exists(from, ec)) {
+            std::filesystem::rename(from, to, ec);
+        }
+    }
+    if (std::filesystem::exists(base, ec)) {
+        std::filesystem::rename(base, base + ".1", ec);
+    }
+    g_fscRawLog.open(base, std::ios::trunc);
+    g_fscRawLogBytes = 0;
+    g_fscRawLogStart = std::chrono::steady_clock::now();
+}
+
+static void flushRawLogLineLocked(std::chrono::steady_clock::time_point now) {
+    if (!g_fscRawLog.is_open() || g_fscRawLogLineBytes == 0) {
+        return;
+    }
+    std::ostringstream oss;
+    double seconds = std::chrono::duration<double>(g_fscRawLogLineStart - g_fscRawLogStart).count();
+    const char* dir = (g_fscRawLogLineDir == RawLogDir::Tx) ? "TX" : "RX";
+    oss << std::fixed << std::setprecision(3) << seconds << " " << dir << ": " << g_fscRawLogLine << "\n";
+    std::string line = oss.str();
+    constexpr size_t kMaxBytes = 5 * 1024 * 1024;
+    if (g_fscRawLogBytes + line.size() > kMaxBytes) {
+        rotateRawLogLocked();
+    }
+    if (g_fscRawLog.is_open()) {
+        g_fscRawLog << line;
+        g_fscRawLog.flush();
+        g_fscRawLogBytes += line.size();
+    }
+    g_fscRawLogLine.clear();
+    g_fscRawLogLineBytes = 0;
+    g_fscRawLogLineDir = RawLogDir::None;
+}
+
+static void openRawLogFromPrefs() {
+    std::lock_guard<std::mutex> lock(g_fscRawLogMutex);
+    if (g_fscRawLog.is_open()) {
+        flushRawLogLineLocked(std::chrono::steady_clock::now());
+        g_fscRawLog.close();
+    }
+    g_fscRawLogActive.store(false);
+    g_fscRawLogBytes = 0;
+    g_fscRawLogLine.clear();
+    g_fscRawLogLineBytes = 0;
+    g_fscRawLogLineDir = RawLogDir::None;
+
+    if (!g_prefs.fsc.rawLog) {
+        return;
+    }
+    std::string logPath = rawLogPath();
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(logPath).parent_path(), ec);
+    g_fscRawLog.open(logPath, std::ios::app);
+    if (!g_fscRawLog.is_open()) {
+        logLine("FSC RAW: failed to open log " + logPath);
+        return;
+    }
+    g_fscRawLogStart = std::chrono::steady_clock::now();
+    std::error_code sizeEc;
+    if (std::filesystem::exists(logPath, sizeEc)) {
+        g_fscRawLogBytes = static_cast<size_t>(std::filesystem::file_size(logPath, sizeEc));
+    }
+    g_fscRawLogActive.store(true);
+    logLine("FSC RAW: continuous log enabled at " + logPath);
+}
+
+static void closeRawLog() {
+    std::lock_guard<std::mutex> lock(g_fscRawLogMutex);
+    if (g_fscRawLog.is_open()) {
+        flushRawLogLineLocked(std::chrono::steady_clock::now());
+        g_fscRawLog.close();
+    }
+    g_fscRawLogActive.store(false);
+}
+
+static void logFscRawBytes(RawLogDir dir, const uint8_t* data, size_t len) {
+    if (!g_fscRawLogActive.load() || data == nullptr || len == 0) {
+        return;
+    }
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_fscRawLogMutex);
+    if (!g_fscRawLog.is_open()) {
+        return;
+    }
+    constexpr int kLineBytesMax = 32;
+    constexpr auto kLineMaxAge = std::chrono::milliseconds(200);
+    for (size_t i = 0; i < len; ++i) {
+        if (g_fscRawLogLineBytes > 0) {
+            if (g_fscRawLogLineDir != dir || now - g_fscRawLogLineStart > kLineMaxAge) {
+                flushRawLogLineLocked(now);
+            }
+        }
+        if (g_fscRawLogLineBytes == 0) {
+            g_fscRawLogLineDir = dir;
+            g_fscRawLogLineStart = now;
+        }
+        if (!g_fscRawLogLine.empty()) {
+            g_fscRawLogLine.push_back(' ');
+        }
+        g_fscRawLogLine += hexByte(data[i]);
+        ++g_fscRawLogLineBytes;
+        if (g_fscRawLogLineBytes >= kLineBytesMax) {
+            flushRawLogLineLocked(now);
+        }
+    }
+}
+
+static void maybeFlushRawLog(std::chrono::steady_clock::time_point now, bool force) {
+    if (!g_fscRawLogActive.load()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_fscRawLogMutex);
+    if (!g_fscRawLog.is_open()) {
+        return;
+    }
+    if (force) {
+        flushRawLogLineLocked(now);
+        return;
+    }
+    constexpr auto kLineMaxAge = std::chrono::milliseconds(200);
+    if (g_fscRawLogLineBytes > 0 && now - g_fscRawLogLineStart > kLineMaxAge) {
+        flushRawLogLineLocked(now);
+    }
 }
 
 static bool bindCommandPath(const std::string& path,
@@ -3137,6 +3311,7 @@ static void syncFscWindowFromPrefs() {
     setWidgetBool(g_fscCheckFuelInvert, g_prefs.fsc.fuelLeverInverted);
     setWidgetBool(g_fscCheckSpeedbrakeRev, g_prefs.fsc.speedBrakeReversed);
     setWidgetBool(g_fscCheckDebug, g_prefs.fsc.debug);
+    setWidgetBool(g_fscCheckRawLog, g_prefs.fsc.rawLog);
     setWidgetBool(g_fscCheckDtr, g_prefs.fsc.serial.dtr);
     setWidgetBool(g_fscCheckRts, g_prefs.fsc.serial.rts);
     setWidgetBool(g_fscCheckXonxoff, g_prefs.fsc.serial.xonxoff);
@@ -3215,6 +3390,7 @@ static void applyFscWindowSettings() {
     updated.fsc.fuelLeverInverted = getWidgetBool(g_fscCheckFuelInvert);
     updated.fsc.speedBrakeReversed = getWidgetBool(g_fscCheckSpeedbrakeRev);
     updated.fsc.debug = getWidgetBool(g_fscCheckDebug);
+    updated.fsc.rawLog = getWidgetBool(g_fscCheckRawLog);
     updated.fsc.serial.dtr = getWidgetBool(g_fscCheckDtr);
     updated.fsc.serial.rts = getWidgetBool(g_fscCheckRts);
     updated.fsc.serial.xonxoff = getWidgetBool(g_fscCheckXonxoff);
@@ -3414,7 +3590,7 @@ static void ensureFscWindow() {
     int l = 0, t = 0, r = 0, b = 0;
     XPLMGetScreenBoundsGlobal(&l, &t, &r, &b);
     const int width = 820;
-    const int height = 840;
+    const int height = 870;
     const int left = l + 80;
     const int top = t - 80;
     const int right = left + width;
@@ -3570,6 +3746,14 @@ static void ensureFscWindow() {
     g_fscCheckDebug = makeCheckRight(labelX, labelX + debugW, "Debug");
     y -= (rowHeight + rowGap);
 
+    int rawLogW = optionWidthForLabel("Raw log (continuous)", 200);
+    int rawLogRight = labelX + rawLogW;
+    if (rawLogRight > contentRight) {
+        rawLogRight = contentRight;
+    }
+    g_fscCheckRawLog = makeCheckRight(labelX, rawLogRight, "Raw log (continuous)");
+    y -= (rowHeight + rowGap);
+
     createCaption(labelX, y, contentRight, y - rowHeight, "Motorized (advanced):", g_fscWindow);
     y -= (rowHeight + rowGap);
 
@@ -3675,6 +3859,7 @@ static void destroyFscWindow() {
     g_fscFieldThrottleDeadband = nullptr;
     g_fscFieldThrottleSyncBand = nullptr;
     g_fscCheckDebug = nullptr;
+    g_fscCheckRawLog = nullptr;
     g_fscFieldMotorSpoilersDown = nullptr;
     g_fscFieldMotorSpoilersUp = nullptr;
     g_fscFieldMotorThrottle1Min = nullptr;
@@ -3807,6 +3992,7 @@ static bool writeFscSettingsToPrefsFile(const Prefs& prefs) {
         {"fsc.throttle_deadband", std::to_string(prefs.fsc.throttleDeadband)},
         {"fsc.throttle_sync_band", std::to_string(prefs.fsc.throttleSyncBand)},
         {"fsc.debug", prefs.fsc.debug ? "1" : "0"},
+        {"fsc.raw_log", prefs.fsc.rawLog ? "1" : "0"},
         {"fsc.baud", std::to_string(prefs.fsc.serial.baud)},
         {"fsc.data_bits", std::to_string(prefs.fsc.serial.dataBits)},
         {"fsc.stop_bits", std::to_string(prefs.fsc.serial.stopBits)},
@@ -3861,7 +4047,8 @@ static void logFscSettings() {
             ", throttle_smooth_ms=" + std::to_string(g_prefs.fsc.throttleSmoothMs) +
             ", throttle_deadband=" + std::to_string(g_prefs.fsc.throttleDeadband) +
             ", throttle_sync_band=" + std::to_string(g_prefs.fsc.throttleSyncBand) +
-            ", debug=" + std::string(g_prefs.fsc.debug ? "1" : "0"));
+            ", debug=" + std::string(g_prefs.fsc.debug ? "1" : "0") +
+            ", raw_log=" + std::string(g_prefs.fsc.rawLog ? "1" : "0"));
 }
 
 static void maybeRunFscDeferredInit() {
@@ -4263,12 +4450,16 @@ static bool fscWriteBytes(intptr_t handle, const uint8_t* data, size_t len) {
     if (!WriteFile(h, data, static_cast<DWORD>(len), &written, nullptr)) {
         return false;
     }
-    return written == len;
+    bool ok = (written == len);
 #else
     int fd = static_cast<int>(handle);
     ssize_t n = ::write(fd, data, len);
-    return n == static_cast<ssize_t>(len);
+    bool ok = (n == static_cast<ssize_t>(len));
 #endif
+    if (ok) {
+        logFscRawBytes(RawLogDir::Tx, data, len);
+    }
+    return ok;
 }
 
 void fscSendPoll() {
@@ -4593,7 +4784,7 @@ static void scheduleFscAxisResync() {
     if (delay < 0.0f) {
         delay = 0.0f;
     }
-    float secondDelay = kFscAxisResyncSecondDelaySec;
+    float secondDelay = g_fscProfileRuntime.sync.axisResyncSecondDelaySec;
     if (secondDelay < 0.0f) {
         secondDelay = 0.0f;
     }
@@ -5714,6 +5905,7 @@ void fscLoop() {
             if (rawCaptureActive && now > rawCaptureUntil) {
                 flushRaw(now, true);
             }
+            maybeFlushRawLog(now, false);
             if (g_prefs.fsc.debug && now - lastRx > std::chrono::seconds(5) && now - lastDiag > std::chrono::seconds(5)) {
                 logLine("FSC: no data for " +
                         std::to_string(std::chrono::duration_cast<std::chrono::seconds>(now - lastRx).count()) +
@@ -5746,6 +5938,7 @@ void fscLoop() {
             continue;
         }
         auto now = std::chrono::steady_clock::now();
+        logFscRawBytes(RawLogDir::Rx, &b1, 1);
         if (rawCaptureActive) {
             if (rawBytes >= 2048 || now > rawCaptureUntil) {
                 flushRaw(now, true);
@@ -5774,6 +5967,7 @@ void fscLoop() {
             }
             continue;
         }
+        logFscRawBytes(RawLogDir::Rx, &b2, 1);
         ++packets;
         lastRx = now;
 
@@ -5795,6 +5989,7 @@ void fscLoop() {
         }
     }
     flushRaw(std::chrono::steady_clock::now(), true);
+    maybeFlushRawLog(std::chrono::steady_clock::now(), true);
     {
         std::lock_guard<std::mutex> lock(g_fscIoMutex);
         intptr_t cur = g_fscFd.exchange(-1);
@@ -5868,6 +6063,7 @@ static void reloadPrefs() {
 
     g_prefs = loadPrefs();
     openLogFileFromPrefs();
+    openRawLogFromPrefs();
     logLine("Prefs reloaded from " + getPrefsPath());
     logFscSettings();
     syncFscWindowFromPrefs();
@@ -5896,6 +6092,7 @@ static void fscPluginStartCommon(bool registerFlightLoop) {
     g_prefs = loadPrefs();
     logLine("Prefs loaded from " + getPrefsPath());
     openLogFileFromPrefs();
+    openRawLogFromPrefs();
     logLine(std::string("Plugin version ") + kPluginVersion);
     logFscSettings();
 
@@ -5956,6 +6153,7 @@ static void fscPluginStopCommon(bool unregisterFlightLoop) {
     if (g_fileLog.is_open()) {
         g_fileLog.close();
     }
+    closeRawLog();
 }
 
 static void fscPluginDisableCommon() {

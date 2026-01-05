@@ -67,6 +67,8 @@ fsc.xonxoff=0
   - If L/R throttle difference is below this normalized band (0..1), both are averaged to prevent false asymmetry.
 - `fsc.debug=0|1`
   - Enables extended logging and raw serial capture (see Logging section).
+- `fsc.raw_log=0|1`
+  - Enables continuous raw RX/TX logging to a rotating file (see Logging section).
 
 ### 4.3 Calibration values
 These are written by the calibration wizard and should normally not be edited by hand.
@@ -106,6 +108,7 @@ Use these only if you need to fine-tune motor behavior. Incorrect values can cau
 ### 4.5 Logging
 - `log.enabled=1|0` (defaults to 1)
 - `log.file=fscb738tq_nextgen.log`
+- `fsc.raw_log=0|1` (continuous raw serial log; rotates at ~5MB, keeps 3 backups)
 
 ### 4.6 Aircraft profiles (schema and usage)
 Profile files (JSON) define aircraft-specific mappings (datarefs/commands) for the FSC throttle quadrant.
@@ -201,6 +204,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 **sync**
 - `defer_until_datarefs`: wait for aircraft datarefs before applying.
 - `startup_delay_sec`: extra delay to allow aircraft init.
+- `axis_resync_second_delay_sec`: optional extra detent-axis resync delay after startup (0 disables).
 - `resync_on_aircraft_loaded`: re-apply profile on aircraft load.
 - `resync_interval_sec`: periodic resync (seconds).
 
@@ -245,7 +249,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 Open: **Plugins → FSCB738TQ-Nextgen → Open Window**
 
 The setup window allows editing the most important FSC settings without leaving the sim.
-- **Fields**: FSC enabled, type, port, baud, data bits, stop bits, parity, DTR/RTS/XONXOFF, fuel inversion, speedbrake reversed, debug.
+- **Fields**: FSC enabled, type, port, baud, data bits, stop bits, parity, DTR/RTS/XONXOFF, fuel inversion, speedbrake reversed, debug, raw log.
 - **Note**: throttle smoothing/sync settings are prefs-only (not in the UI).
 - **Save & Apply**: writes the prefs file, creates a `.bak` backup, then reloads settings and reconnects.
 - **Reload prefs**: re-reads the prefs file from disk and reconnects.
@@ -316,6 +320,8 @@ When `fsc.type=MOTORIZED`, the plugin can drive physical motors:
 - With `fsc.debug=1`:
   - `FSC RAW: ...` captures 10 seconds of serial bytes after connect.
   - `FSC DBG: ...` prints mapped reverser values and calibration ranges.
+- With `fsc.raw_log=1`:
+  - Continuous RX/TX raw stream in `fscb738tq_nextgen_raw.log` (rotates at ~5MB, keeps 3 backups).
 
 ## 11) Known behavior (Zibo)
 - With engines off, Zibo clamps reverser levers to a small value. Full travel (0..1) is only available with engines running.

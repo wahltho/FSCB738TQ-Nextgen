@@ -11,6 +11,7 @@ fsc.xonxoff=0
 fsc.speed_brake_reversed=0
 fsc.fuel_lever_inverted=1
 fsc.debug=0
+fsc.raw_log=0
 fsc.calib.spoilers_down=32
 fsc.calib.spoilers_armed=80
 fsc.calib.spoilers_min=106

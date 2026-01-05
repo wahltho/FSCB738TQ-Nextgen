@@ -345,6 +345,7 @@ All motor calibration values are referenced from prefs.
 "sync": {
   "defer_until_datarefs": true,
   "startup_delay_sec": 10,
+  "axis_resync_second_delay_sec": 10,
   "resync_on_aircraft_loaded": true,
   "resync_interval_sec": 1.0
 }

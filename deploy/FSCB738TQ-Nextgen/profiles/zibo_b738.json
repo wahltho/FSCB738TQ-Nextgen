@@ -354,9 +354,10 @@
   },
   "sync": {
     "defer_until_datarefs": true,
-    "startup_delay_sec": 10,
+    "startup_delay_sec": 20,
+    "axis_resync_second_delay_sec": 10,
     "resync_on_aircraft_loaded": true,
-    "resync_interval_sec": 1.0
+    "resync_interval_sec": 300
   },
   "notes": "Profile uses prefs for calibration and motorized ranges. Speedbrake uses detent commands plus analog mapping between MIN and DETENT. Flaps use nearest detent with calibrated values."
 }
