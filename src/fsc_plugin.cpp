@@ -6089,6 +6089,12 @@ int reloadPrefsCommandHandler(XPLMCommandRef cmd, XPLMCommandPhase phase, void* 
 }
 
 static void fscPluginStartCommon(bool registerFlightLoop) {
+    // On macOS, enable native paths to avoid legacy HFS-style path handling.
+#if APL
+    if (XPLMHasFeature("XPLM_USE_NATIVE_PATHS")) {
+        XPLMEnableFeature("XPLM_USE_NATIVE_PATHS", 1);
+    }
+#endif
     g_prefs = loadPrefs();
     logLine("Prefs loaded from " + getPrefsPath());
     openLogFileFromPrefs();
