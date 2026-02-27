@@ -4335,7 +4335,18 @@ static intptr_t openFscPort(const std::string& port, const Prefs::FscSerial& ser
 
     return reinterpret_cast<intptr_t>(h);
 #else
-    int fd = ::open(port.c_str(), O_RDWR | O_NOCTTY);
+    std::string effectivePort = port;
+#if APL
+    // On macOS, "/dev/cu.*" is the outbound serial device and is typically
+    // more reliable for non-blocking operation than "/dev/tty.*".
+    if (effectivePort.rfind("/dev/tty.", 0) == 0) {
+        std::string cuPort = "/dev/cu." + effectivePort.substr(std::string("/dev/tty.").size());
+        if (std::filesystem::exists(cuPort)) {
+            effectivePort = cuPort;
+        }
+    }
+#endif
+    int fd = ::open(effectivePort.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0) {
         return -1;
     }
@@ -4387,6 +4398,9 @@ static intptr_t openFscPort(const std::string& port, const Prefs::FscSerial& ser
         return -1;
     }
     applyFscControlLines(fd, serial);
+    if (effectivePort != port) {
+        logLine("FSC: using serial device " + effectivePort + " (from " + port + ")");
+    }
     return fd;
 #endif
 }
@@ -4435,7 +4449,13 @@ int readByteWithTimeout(intptr_t handle, uint8_t& out, int timeoutMs) {
         return -1;
     }
     ssize_t n = ::read(fd, &out, 1);
-    return n == 1 ? 1 : -1;
+    if (n == 1) {
+        return 1;
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return 0;
+    }
+    return -1;
 #endif
 }
 
@@ -4454,6 +4474,12 @@ static bool fscWriteBytes(intptr_t handle, const uint8_t* data, size_t len) {
 #else
     int fd = static_cast<int>(handle);
     ssize_t n = ::write(fd, data, len);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return true;  // drop frame if the device is temporarily unavailable
+        }
+        return false;
+    }
     bool ok = (n == static_cast<ssize_t>(len));
 #endif
     if (ok) {
