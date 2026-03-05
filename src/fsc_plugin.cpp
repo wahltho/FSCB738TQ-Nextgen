@@ -4856,6 +4856,15 @@ void processFscState(const FscState& state) {
         return;
     }
 
+    static std::chrono::steady_clock::time_point throttleHandoverAssistUntil{};
+    auto startThrottleHandoverAssist = [&](const char* reason) {
+        constexpr auto kAssistDuration = std::chrono::seconds(8);
+        throttleHandoverAssistUntil = std::chrono::steady_clock::now() + kAssistDuration;
+        if (g_prefs.fsc.debug) {
+            logLine(std::string("FSC DBG: throttle handover assist started (") + reason + ")");
+        }
+    };
+
     auto handleSwitchChange = [&](FscSwitchId id, bool value) {
         size_t idx = static_cast<size_t>(id);
         const auto& mapping = g_fscProfileRuntime.switches[idx];
@@ -4884,6 +4893,9 @@ void processFscState(const FscState& state) {
             }
         } else if (mapping.type == FscSwitchMapping::Type::Momentary) {
             executeActions(value ? mapping.pressActions : mapping.releaseActions);
+            if (id == FscSwitchId::AutothrottleDisengage && value) {
+                startThrottleHandoverAssist("A/T DISENGAGE press");
+            }
         }
         prev.known = true;
         prev.value = value;
@@ -5003,7 +5015,6 @@ void processFscState(const FscState& state) {
         static int simThrRatioType = simThrRatioRef ? XPLMGetDataRefTypes(simThrRatioRef) : 0;
         static bool atLockKnown = false;
         static bool prevAtLock = false;
-        static std::chrono::steady_clock::time_point handoverAssistUntil{};
 
         bool atLockActive = false;
         if (atLockRef) {
@@ -5011,14 +5022,18 @@ void processFscState(const FscState& state) {
             if (readDatarefValue(atLockRef, atLockType, lockVal)) {
                 atLockActive = (lockVal >= 0.5f);
                 if (atLockKnown && prevAtLock && !atLockActive) {
-                    handoverAssistUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-                    if (g_prefs.fsc.debug) {
-                        logLine("FSC DBG: throttle handover assist started (A/T unlock)");
-                    }
+                    startThrottleHandoverAssist("A/T unlock");
                 }
                 prevAtLock = atLockActive;
                 atLockKnown = true;
             }
+        }
+        bool suppressThrottleWrites = atLockActive;
+        if (suppressThrottleWrites) {
+            // Do not fight aircraft A/T while lock is active; restart filter on handover.
+            throttleFilter.init1 = false;
+            throttleFilter.init2 = false;
+            throttleFilter.lastTime = std::chrono::steady_clock::time_point{};
         }
 
         float simThrRatio1 = -1.0f;
@@ -5029,11 +5044,11 @@ void processFscState(const FscState& state) {
         }
 
         auto now = std::chrono::steady_clock::now();
-        bool handoverWindow = now < handoverAssistUntil;
+        bool handoverWindow = now < throttleHandoverAssistUntil;
         bool lowIdle1 = (simThrRatio1 >= 0.0f && simThrRatio1 <= 0.12f);
         bool lowIdle2 = (simThrRatio2 >= 0.0f && simThrRatio2 <= 0.12f);
-        bool assist1 = !atLockActive && (handoverWindow || lowIdle1);
-        bool assist2 = !atLockActive && (handoverWindow || lowIdle2);
+        bool assist1 = handoverWindow || (!atLockActive && lowIdle1);
+        bool assist2 = handoverWindow || (!atLockActive && lowIdle2);
 
         int rawT1 = mapT1.defined ? applyDeadband(state.throttle1, throttleFilter.lastRaw1) : -1;
         int rawT2 = mapT2.defined ? applyDeadband(state.throttle2, throttleFilter.lastRaw2) : -1;
@@ -5095,12 +5110,12 @@ void processFscState(const FscState& state) {
             }
         }
 
-        if (t1.has_value()) {
+        if (!suppressThrottleWrites && t1.has_value()) {
             for (const auto& target : mapT1.targets) {
                 setDatarefValue(target.dataref, target.datarefType, *t1, target.index);
             }
         }
-        if (t2.has_value()) {
+        if (!suppressThrottleWrites && t2.has_value()) {
             for (const auto& target : mapT2.targets) {
                 setDatarefValue(target.dataref, target.datarefType, *t2, target.index);
             }
