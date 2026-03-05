@@ -4995,15 +4995,56 @@ void processFscState(const FscState& state) {
             return raw;
         };
 
+        // Assist handover back to manual throttle at low idle / just after A/T unlock.
+        // This bypasses deadband+smoothing briefly so Zibo can relink reliably.
+        static XPLMDataRef atLockRef = XPLMFindDataRef("laminar/B738/autopilot/lock_throttle");
+        static int atLockType = atLockRef ? XPLMGetDataRefTypes(atLockRef) : 0;
+        static XPLMDataRef simThrRatioRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
+        static int simThrRatioType = simThrRatioRef ? XPLMGetDataRefTypes(simThrRatioRef) : 0;
+        static bool atLockKnown = false;
+        static bool prevAtLock = false;
+        static std::chrono::steady_clock::time_point handoverAssistUntil{};
+
+        bool atLockActive = false;
+        if (atLockRef) {
+            float lockVal = 0.0f;
+            if (readDatarefValue(atLockRef, atLockType, lockVal)) {
+                atLockActive = (lockVal >= 0.5f);
+                if (atLockKnown && prevAtLock && !atLockActive) {
+                    handoverAssistUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                    if (g_prefs.fsc.debug) {
+                        logLine("FSC DBG: throttle handover assist started (A/T unlock)");
+                    }
+                }
+                prevAtLock = atLockActive;
+                atLockKnown = true;
+            }
+        }
+
+        float simThrRatio1 = -1.0f;
+        float simThrRatio2 = -1.0f;
+        if (simThrRatioRef) {
+            readDatarefValue(simThrRatioRef, simThrRatioType, simThrRatio1, 0);
+            readDatarefValue(simThrRatioRef, simThrRatioType, simThrRatio2, 1);
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        bool handoverWindow = now < handoverAssistUntil;
+        bool lowIdle1 = (simThrRatio1 >= 0.0f && simThrRatio1 <= 0.12f);
+        bool lowIdle2 = (simThrRatio2 >= 0.0f && simThrRatio2 <= 0.12f);
+        bool assist1 = !atLockActive && (handoverWindow || lowIdle1);
+        bool assist2 = !atLockActive && (handoverWindow || lowIdle2);
+
         int rawT1 = mapT1.defined ? applyDeadband(state.throttle1, throttleFilter.lastRaw1) : -1;
         int rawT2 = mapT2.defined ? applyDeadband(state.throttle2, throttleFilter.lastRaw2) : -1;
 
         auto t1 = mapT1.defined ? mapAxis(rawT1, mapT1) : std::nullopt;
         auto t2 = mapT2.defined ? mapAxis(rawT2, mapT2) : std::nullopt;
+        auto t1Direct = mapT1.defined ? mapAxis(state.throttle1, mapT1) : std::nullopt;
+        auto t2Direct = mapT2.defined ? mapAxis(state.throttle2, mapT2) : std::nullopt;
 
         float alpha = 1.0f;
         if (g_prefs.fsc.throttleSmoothMs > 0) {
-            auto now = std::chrono::steady_clock::now();
             float dt = 0.0f;
             if (throttleFilter.lastTime.time_since_epoch().count() != 0) {
                 dt = std::chrono::duration<float>(now - throttleFilter.lastTime).count();
@@ -5035,6 +5076,15 @@ void processFscState(const FscState& state) {
 
         t1 = smoothValue(t1, throttleFilter.filtered1, throttleFilter.init1);
         t2 = smoothValue(t2, throttleFilter.filtered2, throttleFilter.init2);
+
+        if (assist1 && t1Direct.has_value()) {
+            t1 = t1Direct;
+            throttleFilter.init1 = false;
+        }
+        if (assist2 && t2Direct.has_value()) {
+            t2 = t2Direct;
+            throttleFilter.init2 = false;
+        }
 
         if (t1.has_value() && t2.has_value() && g_prefs.fsc.throttleSyncBand > 0.0f) {
             float diff = std::fabs(*t1 - *t2);
