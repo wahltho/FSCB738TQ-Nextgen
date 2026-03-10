@@ -3097,7 +3097,7 @@ static bool resolveFscProfileBindings(bool logMissing, bool& missingRefs) {
         }
     }
 
-    if (g_fscProfileRuntime.motorized.enabled && g_prefs.fsc.type == Prefs::FscType::Motorized) {
+    if (g_fscProfileRuntime.motorized.enabled) {
         auto& motor = g_fscProfileRuntime.motorized;
         bindDatarefPath(motor.throttleFollow.lockDatarefPath, motor.throttleFollow.lockDataref,
                         motor.throttleFollow.lockDatarefType, logMissing, "motor throttle lock_dataref", missingRefs);
@@ -3105,6 +3105,10 @@ static bool resolveFscProfileBindings(bool logMissing, bool& missingRefs) {
                         motor.throttleFollow.armDatarefType, logMissing, "motor throttle arm_dataref", missingRefs);
         bindDatarefPath(motor.throttleFollow.leverDatarefPath, motor.throttleFollow.leverDataref,
                         motor.throttleFollow.leverDatarefType, logMissing, "motor throttle lever_dataref", missingRefs);
+    }
+
+    if (g_fscProfileRuntime.motorized.enabled && g_prefs.fsc.type == Prefs::FscType::Motorized) {
+        auto& motor = g_fscProfileRuntime.motorized;
         requirePrefIntRef(motor.throttleFollow.thr1MinRef, "motor throttle1 min ref", logMissing, missingRefs);
         requirePrefIntRef(motor.throttleFollow.thr1MaxRef, "motor throttle1 max ref", logMissing, missingRefs);
         requirePrefIntRef(motor.throttleFollow.thr2MinRef, "motor throttle2 min ref", logMissing, missingRefs);
@@ -4955,7 +4959,7 @@ void processFscState(const FscState& state) {
         std::chrono::steady_clock::time_point lastTime{};
     };
     static ThrottleFilterState throttleFilter;
-    enum class ThrottleControlMode { FollowHardware, FollowSim, Handover };
+    enum class ThrottleControlMode { FollowHardware, FollowSim, TakeoverPending, Handover };
     struct ThrottleAuthorityState {
         ThrottleControlMode mode = ThrottleControlMode::FollowHardware;
         int lastSeen1 = -1;
@@ -4969,10 +4973,36 @@ void processFscState(const FscState& state) {
         std::chrono::steady_clock::time_point lastSimMove1{};
         std::chrono::steady_clock::time_point lastSimMove2{};
         std::chrono::steady_clock::time_point mismatchSince{};
+        std::chrono::steady_clock::time_point takeoverRequestUntil{};
         std::chrono::steady_clock::time_point handoverSince{};
         std::chrono::steady_clock::time_point alignedSince{};
+        int postWriteWatchId = 0;
+        ThrottleControlMode postWriteWatchOriginMode = ThrottleControlMode::FollowHardware;
+        bool postWriteWatchHas1 = false;
+        bool postWriteWatchHas2 = false;
+        float postWriteWatchExpected1 = 0.0f;
+        float postWriteWatchExpected2 = 0.0f;
+        std::chrono::steady_clock::time_point postWriteWatchStartedAt{};
+        std::chrono::steady_clock::time_point postWriteWatchUntil{};
+        std::chrono::steady_clock::time_point postWriteWatchNextLogAt{};
     };
     static ThrottleAuthorityState throttleAuthority;
+    struct ThrottleDiagDataref {
+        const char* path = nullptr;
+        int index = -1;
+        XPLMDataRef ref = nullptr;
+        int type = 0;
+        bool resolved = false;
+    };
+    static std::array<ThrottleDiagDataref, 7> throttleDiagDatarefs{{
+        {"laminar/B738/engine/thrust12_leveler", -1},
+        {"laminar/B738/engine/thrust1_leveler", -1},
+        {"laminar/B738/engine/thrust2_leveler", -1},
+        {"sim/cockpit2/engine/indicators/N1_percent", 0},
+        {"sim/cockpit2/engine/indicators/N1_percent", 1},
+        {"sim/flightmodel/engine/ENGN_thro_use", 0},
+        {"sim/flightmodel/engine/ENGN_thro_use", 1},
+    }};
 
     auto throttleModeName = [](ThrottleControlMode mode) -> const char* {
         switch (mode) {
@@ -4980,6 +5010,8 @@ void processFscState(const FscState& state) {
                 return "follow_hardware";
             case ThrottleControlMode::FollowSim:
                 return "follow_sim";
+            case ThrottleControlMode::TakeoverPending:
+                return "takeover_pending";
             case ThrottleControlMode::Handover:
                 return "handover";
         }
@@ -5013,31 +5045,38 @@ void processFscState(const FscState& state) {
         auto now = std::chrono::steady_clock::now();
         constexpr int kLeverMoveThreshold = 1;
         constexpr auto kLeverIntentWindow = std::chrono::milliseconds(1200);
+        constexpr auto kTakeoverRequestHold = std::chrono::milliseconds(3000);
         constexpr auto kSimMoveWindow = std::chrono::milliseconds(500);
         constexpr auto kDecouplePersist = std::chrono::milliseconds(150);
         constexpr auto kHandoverAlignPersist = std::chrono::milliseconds(150);
         constexpr auto kHandoverFallback = std::chrono::milliseconds(500);
+        constexpr auto kPostWriteWatchDuration = std::chrono::milliseconds(500);
+        constexpr auto kPostWriteWatchLogInterval = std::chrono::milliseconds(100);
         constexpr float kSimMoveEps = 0.01f;
         constexpr float kDecoupleDiff = 0.03f;
         constexpr float kRecoupleAlignDiff = 0.025f;
 
-        auto noteLeverMovement = [&](int raw, int& lastSeen, std::chrono::steady_clock::time_point& lastMove) {
+        auto noteLeverMovement = [&](int raw, int& lastSeen, std::chrono::steady_clock::time_point& lastMove) -> bool {
             if (raw < 0) {
                 lastSeen = -1;
                 lastMove = std::chrono::steady_clock::time_point{};
-                return;
+                return false;
             }
             if (lastSeen < 0) {
                 lastSeen = raw;
-                return;
+                return false;
             }
             if (std::abs(raw - lastSeen) >= kLeverMoveThreshold) {
                 lastMove = now;
+                lastSeen = raw;
+                return true;
             }
             lastSeen = raw;
+            return false;
         };
-        noteLeverMovement(state.throttle1, throttleAuthority.lastSeen1, throttleAuthority.lastMove1);
-        noteLeverMovement(state.throttle2, throttleAuthority.lastSeen2, throttleAuthority.lastMove2);
+        bool leverMovedNow1 = noteLeverMovement(state.throttle1, throttleAuthority.lastSeen1, throttleAuthority.lastMove1);
+        bool leverMovedNow2 = noteLeverMovement(state.throttle2, throttleAuthority.lastSeen2, throttleAuthority.lastMove2);
+        bool leverMovedNow = leverMovedNow1 || leverMovedNow2;
 
         auto inWindow = [&](const std::chrono::steady_clock::time_point& ts, std::chrono::milliseconds window) -> bool {
             if (ts.time_since_epoch().count() == 0) {
@@ -5160,23 +5199,6 @@ void processFscState(const FscState& state) {
             }
             return std::to_string(*diff);
         };
-        auto setThrottleMode = [&](ThrottleControlMode newMode, const std::string& reason) {
-            if (throttleAuthority.mode == newMode) {
-                return;
-            }
-            logLine("FSC: throttle authority " + std::string(throttleModeName(throttleAuthority.mode)) +
-                    " -> " + throttleModeName(newMode) + " (reason=" + reason +
-                    ", diff1=" + diffText(diff1) + ", diff2=" + diffText(diff2) + ")");
-            throttleAuthority.mode = newMode;
-            throttleAuthority.mismatchSince = std::chrono::steady_clock::time_point{};
-            throttleAuthority.handoverSince = std::chrono::steady_clock::time_point{};
-            throttleAuthority.alignedSince = std::chrono::steady_clock::time_point{};
-            resetThrottleFilter();
-            if (newMode == ThrottleControlMode::Handover) {
-                throttleAuthority.handoverSince = now;
-            }
-        };
-
         bool simDriveNow = inWindow(throttleAuthority.lastSimMove1, kSimMoveWindow) ||
                            inWindow(throttleAuthority.lastSimMove2, kSimMoveWindow);
         bool lockActive = throttleLockActive.value_or(false);
@@ -5194,8 +5216,215 @@ void processFscState(const FscState& state) {
         if (!comparable) {
             alignedForHandover = !simDriveNow;
         }
-        bool handoverReady = leverMoveIntent && alignedForHandover && !lockActive && !simDriveNow;
+        bool takeoverRequestActive =
+            throttleAuthority.takeoverRequestUntil.time_since_epoch().count() != 0 &&
+            now < throttleAuthority.takeoverRequestUntil;
         bool finishHandoverAfterWrite = false;
+        auto valueText = [](const std::optional<float>& value) -> std::string {
+            if (!value.has_value()) {
+                return "n/a";
+            }
+            return std::to_string(*value);
+        };
+        auto boolText = [](bool value) -> const char* { return value ? "1" : "0"; };
+        auto readThrottleDiagDataref = [&](ThrottleDiagDataref& diag) -> std::optional<float> {
+            if (!diag.resolved) {
+                diag.resolved = true;
+                if (diag.path && diag.path[0] != '\0') {
+                    diag.ref = XPLMFindDataRef(diag.path);
+                    if (diag.ref) {
+                        diag.type = XPLMGetDataRefTypes(diag.ref);
+                    }
+                }
+            }
+            if (!diag.ref) {
+                return std::nullopt;
+            }
+            float value = 0.0f;
+            if (readDatarefValue(diag.ref, diag.type, value, diag.index)) {
+                return value;
+            }
+            return std::nullopt;
+        };
+        auto formatThrottleDiagDatarefs = [&]() -> std::string {
+            std::string out;
+            for (auto& diag : throttleDiagDatarefs) {
+                auto value = readThrottleDiagDataref(diag);
+                if (!value.has_value()) {
+                    continue;
+                }
+                if (!out.empty()) {
+                    out += ";";
+                }
+                out += diag.path;
+                if (diag.index >= 0) {
+                    out += "[";
+                    out += std::to_string(diag.index);
+                    out += "]";
+                }
+                out += "=";
+                out += valueText(value);
+            }
+            return out.empty() ? "none" : out;
+        };
+        auto logThrottleDiag = [&](const std::string& tag) {
+            if (!g_prefs.fsc.debug) {
+                return;
+            }
+            bool currentRequestActive =
+                throttleAuthority.takeoverRequestUntil.time_since_epoch().count() != 0 &&
+                now < throttleAuthority.takeoverRequestUntil;
+            logLine("FSC DBG: throttle diag " + tag +
+                    " mode=" + throttleModeName(throttleAuthority.mode) +
+                    " lock=" + boolText(lockActive) +
+                    " sim_drive=" + boolText(simDriveNow) +
+                    " lever_intent=" + boolText(leverMoveIntent) +
+                    " request_active=" + boolText(currentRequestActive) +
+                    " diff1=" + diffText(diff1) +
+                    " diff2=" + diffText(diff2) +
+                    " sim1=" + valueText(simT1) +
+                    " sim2=" + valueText(simT2) +
+                    " response_refs=" + formatThrottleDiagDatarefs() +
+                    " direct1=" + valueText(t1Direct) +
+                    " direct2=" + valueText(t2Direct));
+        };
+        auto formatTargetReadbacks = [&](const FscAxisMapping& mapping) -> std::string {
+            if (mapping.targets.empty()) {
+                return "none";
+            }
+            std::string out;
+            for (size_t i = 0; i < mapping.targets.size(); ++i) {
+                const auto& target = mapping.targets[i];
+                float readback = 0.0f;
+                if (!out.empty()) {
+                    out += ";";
+                }
+                out += target.path;
+                out += "=";
+                if (readDatarefValue(target.dataref, target.datarefType, readback, target.index)) {
+                    out += valueText(readback);
+                } else {
+                    out += "n/a";
+                }
+            }
+            return out;
+        };
+        auto clearThrottlePostWriteWatch = [&]() {
+            throttleAuthority.postWriteWatchHas1 = false;
+            throttleAuthority.postWriteWatchHas2 = false;
+            throttleAuthority.postWriteWatchStartedAt = std::chrono::steady_clock::time_point{};
+            throttleAuthority.postWriteWatchUntil = std::chrono::steady_clock::time_point{};
+            throttleAuthority.postWriteWatchNextLogAt = std::chrono::steady_clock::time_point{};
+        };
+        auto postWriteWatchActive = [&]() -> bool {
+            return throttleAuthority.postWriteWatchUntil.time_since_epoch().count() != 0;
+        };
+        auto watchExpectedText = [&](bool hasValue, float value) -> std::string {
+            return hasValue ? valueText(value) : "n/a";
+        };
+        auto watchErrText = [&](bool hasExpected, float expected, const std::optional<float>& observed) -> std::string {
+            if (!hasExpected || !observed.has_value()) {
+                return "n/a";
+            }
+            return std::to_string(std::fabs(expected - *observed));
+        };
+        auto logThrottleWriteback = [&](const std::string& tag,
+                                        ThrottleControlMode currentWriteMode,
+                                        const std::optional<float>& write1,
+                                        const std::optional<float>& write2) {
+            if (!g_prefs.fsc.debug) {
+                return;
+            }
+            logLine("FSC DBG: throttle write " + tag +
+                    " mode=" + throttleModeName(throttleAuthority.mode) +
+                    " write_mode=" + throttleModeName(currentWriteMode) +
+                    " lock=" + boolText(lockActive) +
+                    " sim_drive=" + boolText(simDriveNow) +
+                    " lever_intent=" + boolText(leverMoveIntent) +
+                    " write1=" + valueText(write1) +
+                    " write2=" + valueText(write2) +
+                    " sim1=" + valueText(simT1) +
+                    " sim2=" + valueText(simT2) +
+                    " response_refs=" + formatThrottleDiagDatarefs() +
+                    " t1_targets=" + formatTargetReadbacks(mapT1) +
+                    " t2_targets=" + formatTargetReadbacks(mapT2));
+        };
+        auto armThrottlePostWriteWatch = [&](ThrottleControlMode currentWriteMode,
+                                             const std::optional<float>& write1,
+                                             const std::optional<float>& write2) {
+            bool wasActive = postWriteWatchActive() && now < throttleAuthority.postWriteWatchUntil;
+            if (!wasActive) {
+                throttleAuthority.postWriteWatchId += 1;
+                throttleAuthority.postWriteWatchStartedAt = now;
+            }
+            throttleAuthority.postWriteWatchOriginMode = currentWriteMode;
+            throttleAuthority.postWriteWatchHas1 = write1.has_value();
+            throttleAuthority.postWriteWatchHas2 = write2.has_value();
+            throttleAuthority.postWriteWatchExpected1 = write1.value_or(0.0f);
+            throttleAuthority.postWriteWatchExpected2 = write2.value_or(0.0f);
+            throttleAuthority.postWriteWatchUntil = now + kPostWriteWatchDuration;
+            throttleAuthority.postWriteWatchNextLogAt = now;
+        };
+        auto logThrottlePostWriteWatch = [&](const std::string& tag) {
+            if (!g_prefs.fsc.debug || !postWriteWatchActive()) {
+                return;
+            }
+            long long elapsedMs = 0;
+            if (throttleAuthority.postWriteWatchStartedAt.time_since_epoch().count() != 0) {
+                elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                now - throttleAuthority.postWriteWatchStartedAt)
+                                .count();
+            }
+            logLine("FSC DBG: throttle watch " + tag +
+                    " id=" + std::to_string(throttleAuthority.postWriteWatchId) +
+                    " origin_mode=" + throttleModeName(throttleAuthority.postWriteWatchOriginMode) +
+                    " mode=" + throttleModeName(throttleAuthority.mode) +
+                    " elapsed_ms=" + std::to_string(elapsedMs) +
+                    " lock=" + boolText(lockActive) +
+                    " sim_drive=" + boolText(simDriveNow) +
+                    " lever_intent=" + boolText(leverMoveIntent) +
+                    " expected1=" + watchExpectedText(throttleAuthority.postWriteWatchHas1,
+                                                      throttleAuthority.postWriteWatchExpected1) +
+                    " expected2=" + watchExpectedText(throttleAuthority.postWriteWatchHas2,
+                                                      throttleAuthority.postWriteWatchExpected2) +
+                    " sim1=" + valueText(simT1) +
+                    " sim2=" + valueText(simT2) +
+                    " sim_err1=" + watchErrText(throttleAuthority.postWriteWatchHas1,
+                                                throttleAuthority.postWriteWatchExpected1,
+                                                simT1) +
+                    " sim_err2=" + watchErrText(throttleAuthority.postWriteWatchHas2,
+                                                throttleAuthority.postWriteWatchExpected2,
+                                                simT2) +
+                    " response_refs=" + formatThrottleDiagDatarefs() +
+                    " t1_targets=" + formatTargetReadbacks(mapT1) +
+                    " t2_targets=" + formatTargetReadbacks(mapT2));
+        };
+        auto setThrottleMode = [&](ThrottleControlMode newMode, const std::string& reason) {
+            if (throttleAuthority.mode == newMode) {
+                return;
+            }
+            logLine("FSC: throttle authority " + std::string(throttleModeName(throttleAuthority.mode)) +
+                    " -> " + throttleModeName(newMode) + " (reason=" + reason +
+                    ", lock=" + boolText(lockActive) +
+                    ", sim_drive=" + boolText(simDriveNow) +
+                    ", lever_intent=" + boolText(leverMoveIntent) +
+                    ", request_active=" + boolText(takeoverRequestActive) +
+                    ", diff1=" + diffText(diff1) + ", diff2=" + diffText(diff2) +
+                    ", sim1=" + valueText(simT1) + ", sim2=" + valueText(simT2) +
+                    ", direct1=" + valueText(t1Direct) + ", direct2=" + valueText(t2Direct) + ")");
+            throttleAuthority.mode = newMode;
+            throttleAuthority.mismatchSince = std::chrono::steady_clock::time_point{};
+            throttleAuthority.takeoverRequestUntil = std::chrono::steady_clock::time_point{};
+            throttleAuthority.handoverSince = std::chrono::steady_clock::time_point{};
+            throttleAuthority.alignedSince = std::chrono::steady_clock::time_point{};
+            resetThrottleFilter();
+            if (newMode == ThrottleControlMode::TakeoverPending) {
+                throttleAuthority.takeoverRequestUntil = now + kTakeoverRequestHold;
+            }
+            if (newMode == ThrottleControlMode::Handover) {
+                throttleAuthority.handoverSince = now;
+            }
+        };
 
         switch (throttleAuthority.mode) {
             case ThrottleControlMode::FollowHardware:
@@ -5212,13 +5441,30 @@ void processFscState(const FscState& state) {
                 }
                 break;
             case ThrottleControlMode::FollowSim:
-                if (handoverReady) {
-                    setThrottleMode(ThrottleControlMode::Handover, "hardware_aligned");
+                if (leverMoveIntent) {
+                    setThrottleMode(ThrottleControlMode::TakeoverPending, "lever_request");
+                }
+                break;
+            case ThrottleControlMode::TakeoverPending:
+                if (leverMoveIntent) {
+                    throttleAuthority.takeoverRequestUntil = now + kTakeoverRequestHold;
+                    takeoverRequestActive = true;
+                }
+                if (!takeoverRequestActive) {
+                    setThrottleMode(ThrottleControlMode::FollowSim, "request_timeout");
+                    break;
+                }
+                if (!simDriveNow) {
+                    if (alignedForHandover) {
+                        setThrottleMode(ThrottleControlMode::Handover, "aligned_takeover");
+                    } else if (!lockActive) {
+                        setThrottleMode(ThrottleControlMode::Handover, "sim_release");
+                    }
                 }
                 break;
             case ThrottleControlMode::Handover:
-                if (lockActive || (simDriveNow && mismatchNow && !leverMoveIntent)) {
-                    setThrottleMode(ThrottleControlMode::FollowSim, lockActive ? "lock_reasserted" : "sim_reasserted");
+                if (lockActive && simDriveNow && !leverMoveIntent) {
+                    setThrottleMode(ThrottleControlMode::FollowSim, "sim_reasserted");
                     break;
                 }
                 if (comparable) {
@@ -5237,6 +5483,27 @@ void processFscState(const FscState& state) {
                     finishHandoverAfterWrite = true;
                 }
                 break;
+        }
+
+        if (postWriteWatchActive()) {
+            bool watchExpired = now >= throttleAuthority.postWriteWatchUntil;
+            bool watchTickDue =
+                throttleAuthority.postWriteWatchNextLogAt.time_since_epoch().count() != 0 &&
+                now >= throttleAuthority.postWriteWatchNextLogAt;
+            if (watchExpired) {
+                logThrottlePostWriteWatch("end");
+                clearThrottlePostWriteWatch();
+            } else if (watchTickDue) {
+                logThrottlePostWriteWatch("tick");
+                throttleAuthority.postWriteWatchNextLogAt = now + kPostWriteWatchLogInterval;
+            }
+        }
+
+        if (leverMovedNow &&
+            (throttleAuthority.mode == ThrottleControlMode::FollowSim ||
+             throttleAuthority.mode == ThrottleControlMode::TakeoverPending ||
+             throttleAuthority.mode == ThrottleControlMode::Handover)) {
+            logThrottleDiag("lever_probe");
         }
 
         ThrottleControlMode writeMode = throttleAuthority.mode;
@@ -5306,6 +5573,13 @@ void processFscState(const FscState& state) {
             for (const auto& target : mapT2.targets) {
                 setDatarefValue(target.dataref, target.datarefType, *outT2, target.index);
             }
+        }
+        if (writeMode == ThrottleControlMode::Handover || finishHandoverAfterWrite) {
+            armThrottlePostWriteWatch(writeMode, outT1, outT2);
+        }
+        if (writeMode != ThrottleControlMode::FollowSim &&
+            (writeMode == ThrottleControlMode::Handover || finishHandoverAfterWrite || leverMovedNow)) {
+            logThrottleWriteback(finishHandoverAfterWrite ? "complete" : "probe", writeMode, outT1, outT2);
         }
         if (finishHandoverAfterWrite) {
             setThrottleMode(ThrottleControlMode::FollowHardware, "handover_complete");
