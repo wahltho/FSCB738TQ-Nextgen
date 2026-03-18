@@ -2456,6 +2456,22 @@ static void normalizeFscThrottleFilter(Prefs::FscPrefs& fsc) {
     }
 }
 
+static void normalizeFscDiscreteFlapDetents(Prefs::FscPrefs& fsc) {
+    if (fsc.type != Prefs::FscType::Pro && fsc.type != Prefs::FscType::Motorized) {
+        return;
+    }
+    const Prefs::FscCalib defaults = defaultFscCalibForType(fsc.type);
+    fsc.calib.flaps00 = defaults.flaps00;
+    fsc.calib.flaps01 = defaults.flaps01;
+    fsc.calib.flaps02 = defaults.flaps02;
+    fsc.calib.flaps05 = defaults.flaps05;
+    fsc.calib.flaps10 = defaults.flaps10;
+    fsc.calib.flaps15 = defaults.flaps15;
+    fsc.calib.flaps25 = defaults.flaps25;
+    fsc.calib.flaps30 = defaults.flaps30;
+    fsc.calib.flaps40 = defaults.flaps40;
+}
+
 static bool writeDefaultPrefsFile(const Prefs& prefs);
 
 Prefs loadPrefs() {
@@ -2568,6 +2584,7 @@ Prefs loadPrefs() {
     }
     normalizeFscSerial(prefs.fsc.serial);
     normalizeFscThrottleFilter(prefs.fsc);
+    normalizeFscDiscreteFlapDetents(prefs.fsc);
     return prefs;
 }
 
@@ -3514,6 +3531,7 @@ static void applyFscWindowSettings() {
 
     normalizeFscSerial(updated.fsc.serial);
     normalizeFscThrottleFilter(updated.fsc);
+    normalizeFscDiscreteFlapDetents(updated.fsc);
 
     if (!writeFscSettingsToPrefsFile(updated)) {
         logLine("FSC UI: failed to save settings to prefs.");
@@ -4583,11 +4601,11 @@ void handleFscPacket(uint8_t cmdByte, uint8_t dataByte) {
                     case 0xC: flapSetting = 1; break;   // 1100
                     case 0xE: flapSetting = 2; break;   // 1110
                     case 0xF: flapSetting = 5; break;   // 1111
-                    case 0xD: flapSetting = 10; break;  // 1101
-                    case 0x9: flapSetting = 15; break;  // 1001
+                    case 0x7: flapSetting = 10; break;  // 0111
+                    case 0x3: flapSetting = 15; break;  // 0011
                     case 0x1: flapSetting = 25; break;  // 0001
-                    case 0x3: flapSetting = 30; break;  // 0011
-                    case 0x7: flapSetting = 40; break;  // 0111
+                    case 0x9: flapSetting = 30; break;  // 1001
+                    case 0xD: flapSetting = 40; break;  // 1101
                     default: break;
                 }
                 if (flapSetting >= 0) {

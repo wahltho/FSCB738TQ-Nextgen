@@ -4,8 +4,8 @@ This document covers FSCB738TQ-Nextgen setup, prefs, commands, calibration, logg
 
 **Support status**
 - Supported platforms: macOS (universal), Windows x64, Linux x86_64.
-- Tested so far: Windows + FSC B737 Throttle Quadrant SEMIPRO only.
-- Other platform/hardware combinations are currently untested.
+- Hands-on hardware available during development: FSC B737 Throttle Quadrant SEMIPRO only.
+- Other hardware variants, especially MOTORIZED, may work but should be treated as field-validated unless explicitly confirmed by direct hardware testing.
 
 **Disclaimer**
 Provided "as is", without warranty of any kind. Use at your own risk; no liability for damages.
@@ -47,6 +47,24 @@ Menus:
 - With `fsc.raw_log=1`, the plugin:
   - Writes a continuous RAW RX/TX stream to `fscb738tq_nextgen_raw.log` (rotates at ~5MB, keeps 3 backups).
 - Log location: `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/log/fscb738tq_nextgen.log`.
+
+## FSC serial packet notes
+- `0x2A`: flap input for `SEMIPRO` only. This is a raw flap-position value and is used by the flap-detent calibration flow.
+- `0x10`: combined flap + trim-wheel packet for `PRO` and `MOTORIZED`.
+- For `PRO`/`MOTORIZED`, the low nibble of the `0x10` packet is a 4-bit Gray-code flap detent, not a linear numeric value.
+- Current `PRO`/`MOTORIZED` flap mapping:
+  - `0x8 -> 0`
+  - `0xC -> 1`
+  - `0xE -> 2`
+  - `0xF -> 5`
+  - `0x7 -> 10`
+  - `0x3 -> 15`
+  - `0x1 -> 25`
+  - `0x9 -> 30`
+  - `0xD -> 40`
+- Bits 4 and 5 of the `0x10` packet are used for trim-wheel quadrature decoding.
+- Important when reading RAW logs: bytes such as `0xAC 0x..` are `0x2C` packets after command masking and belong to speedbrake, not flaps.
+- The old Lua logic documented only the logical flap detent values (`0, 1, 2, 5, 10, 15, 25, 30, 40`), not the exact `0x10` nibble-to-detent mapping. Real RAW logs from a MOTORIZED unit were required to confirm the complete Gray-code sequence.
 
 ## Datarefs / outputs (FSC)
 - Throttles (all FSC types, when throttle motor is not active):  
