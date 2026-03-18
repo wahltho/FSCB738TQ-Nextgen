@@ -4578,15 +4578,16 @@ void handleFscPacket(uint8_t cmdByte, uint8_t dataByte) {
                 uint8_t flapCode = static_cast<uint8_t>(y & 0x0F);
                 int flapSetting = -1;
                 switch (flapCode) {
+                    // PRO/MOTORIZED flaps are reported as a 4-bit Gray-code sequence.
                     case 0x8: flapSetting = 0; break;   // 1000
                     case 0xC: flapSetting = 1; break;   // 1100
                     case 0xE: flapSetting = 2; break;   // 1110
                     case 0xF: flapSetting = 5; break;   // 1111
-                    case 0x7: flapSetting = 10; break;  // 0111
-                    case 0x3: flapSetting = 15; break;  // 0011
-                    case 0x2: flapSetting = 25; break;  // 0010
-                    case 0x1: flapSetting = 30; break;  // 0001
-                    case 0x9: flapSetting = 40; break;  // 1001
+                    case 0xD: flapSetting = 10; break;  // 1101
+                    case 0x9: flapSetting = 15; break;  // 1001
+                    case 0x1: flapSetting = 25; break;  // 0001
+                    case 0x3: flapSetting = 30; break;  // 0011
+                    case 0x7: flapSetting = 40; break;  // 0111
                     default: break;
                 }
                 if (flapSetting >= 0) {
