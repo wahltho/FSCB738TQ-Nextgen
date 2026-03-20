@@ -6245,19 +6245,40 @@ void processFscOutputs(const FscState& inputState) {
         g_fscOut.lastTrimWheel = trimWheel;
     }
 
-    if (digitalMask != g_fscOut.digitalMask) {
-        fscWriteFrame(0x87, 0x10, digitalMask);
-        g_fscOut.digitalMask = digitalMask;
-        wroteDigital = true;
-    }
+    auto writeMotorizedDigitalState = [&](uint8_t desiredMask, bool parkLightShouldBeOn) {
+        // On MOTORIZED units, the park-brake-light ON command can blank the shared
+        // digital outputs (including backlight). Send the park-light command first,
+        // then reapply the shared digital mask to restore the intended outputs.
+        if (parkLightShouldBeOn) {
+            fscWriteFrame(0x87, 0x11, 0x00);
+            if (desiredMask != 0) {
+                fscWriteFrame(0x87, 0x10, desiredMask);
+            }
+        } else {
+            fscWriteFrame(0x87, 0x10, desiredMask);
+        }
+        g_fscOut.digitalMask = desiredMask;
+    };
+
+    bool needDigitalWrite = (digitalMask != g_fscOut.digitalMask);
     if (parkLightChanged && !parkLightOn) {
-        // Some firmwares use 0x87 0x10 0x00 as park-brake-light OFF; reapply digital mask afterwards.
+        // Some firmwares use 0x87 0x10 0x00 as park-brake-light OFF.
         fscWriteFrame(0x87, 0x10, 0x00);
-        fscWriteFrame(0x87, 0x10, digitalMask);
+        if (digitalMask != 0) {
+            writeMotorizedDigitalState(digitalMask, false);
+        } else {
+            g_fscOut.digitalMask = 0;
+        }
+        wroteDigital = true;
+    } else if (needDigitalWrite) {
+        writeMotorizedDigitalState(digitalMask, false);
         wroteDigital = true;
     }
     if (parkLightOn && (parkLightChanged || wroteDigital)) {
-        // Restore desired park-brake-light state after any 0x87 0x10 write.
+        // On MOTORIZED units, reassert the park-brake light only when the
+        // underlying shared digital state changed or the light itself toggled.
+        // Continuous refresh was shown to strobe the light and actuate the
+        // park-brake mechanism on real hardware.
         fscWriteFrame(0x87, 0x11, 0x00);
     }
     if (parkLightChanged) {
@@ -6347,11 +6368,7 @@ void processFscOutputs(const FscState& inputState) {
             }
         }
         if (speedbrakeMotorActive && digitalMask != g_fscOut.digitalMask) {
-            fscWriteFrame(0x87, 0x10, digitalMask);
-            g_fscOut.digitalMask = digitalMask;
-            if (parkLightOn) {
-                fscWriteFrame(0x87, 0x11, 0x00);
-            }
+            writeMotorizedDigitalState(digitalMask, parkLightOn);
         }
     }
     g_fscMotorSpeedbrakeActive.store(speedbrakeMotorActive);
