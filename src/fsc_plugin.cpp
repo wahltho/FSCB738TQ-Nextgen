@@ -322,6 +322,7 @@ struct FscOutputState {
     std::chrono::steady_clock::time_point speedbrakeMotorOffTime{};
     std::chrono::steady_clock::time_point trimIndMotorOffTime{};
     std::chrono::steady_clock::time_point lastThrottleUpdate{};
+    std::chrono::steady_clock::time_point lastMotorPowerRefresh{};
     float lastTrimWheel = std::numeric_limits<float>::quiet_NaN();
 };
 
@@ -6316,6 +6317,7 @@ void processFscOutputs(const FscState& inputState) {
     }
     g_fscMotorThrottleActive.store(throttleMotors);
 
+    bool refreshThrottleMotorPower = false;
     if (throttleMotors) {
         float updateRate = 0.0f;
         if (!getPrefFloatByKey(motor.throttleFollow.updateRateRef, updateRate)) {
@@ -6323,6 +6325,10 @@ void processFscOutputs(const FscState& inputState) {
         }
         if (g_fscOut.lastThrottleUpdate.time_since_epoch().count() == 0 ||
             now - g_fscOut.lastThrottleUpdate > std::chrono::duration<float>(updateRate)) {
+            // FSC motorized throttles need the power bits reasserted while A/T is
+            // actively driving the levers; treating them as a one-shot latch can
+            // leave the hardware motors unpowered after a short movement.
+            refreshThrottleMotorPower = true;
             if (motorThr1 != g_fscOut.motorThrottle1Pos) {
                 fscWritePosition(0x00, motorThr1);
                 g_fscOut.motorThrottle1Pos = motorThr1;
@@ -6406,9 +6412,16 @@ void processFscOutputs(const FscState& inputState) {
     if (throttleMotors) motorPower |= 0x01 | 0x02;
     if (speedbrakeMotorActive) motorPower |= 0x04;
     if (trimIndMotorActive) motorPower |= 0x08;
-    if (motorPower != g_fscOut.motorPowerMask) {
+    bool refreshTimedMotorPower = false;
+    if ((speedbrakeMotorActive || trimIndMotorActive) &&
+        (g_fscOut.lastMotorPowerRefresh.time_since_epoch().count() == 0 ||
+         now - g_fscOut.lastMotorPowerRefresh > std::chrono::duration<float>(0.07f))) {
+        refreshTimedMotorPower = true;
+    }
+    if (motorPower != g_fscOut.motorPowerMask || refreshThrottleMotorPower || refreshTimedMotorPower) {
         fscWriteFrame(0x93, 0x00, motorPower);
         g_fscOut.motorPowerMask = motorPower;
+        g_fscOut.lastMotorPowerRefresh = now;
     }
 }
 

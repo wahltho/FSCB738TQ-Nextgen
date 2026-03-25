@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef PLUGIN_VERSION
-#define PLUGIN_VERSION "1.19"
+#define PLUGIN_VERSION "1.22"
 #endif
 
 #ifndef PLUGIN_NAME
