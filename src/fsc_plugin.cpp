@@ -48,6 +48,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <fstream>
@@ -306,6 +307,16 @@ std::chrono::steady_clock::time_point g_fscAxisResyncSecondDue{};
 std::thread g_fscThread;
 std::atomic<intptr_t> g_fscFd{-1};
 std::mutex g_fscIoMutex;
+std::mutex g_fscTxMutex;
+
+struct FscTxFrame {
+    uint8_t a = 0;
+    uint8_t b = 0;
+    uint8_t c = 0;
+};
+
+std::deque<FscTxFrame> g_fscTxQueue;
+constexpr size_t kFscTxQueueMax = 512;
 
 std::atomic<bool> g_fscMotorThrottleActive{false};
 std::atomic<bool> g_fscMotorSpeedbrakeActive{false};
@@ -503,6 +514,9 @@ void processFscState(const FscState& state);
 void processFscOutputs(const FscState& inputState);
 void updateFscCalibration(const FscState& inputState);
 bool fscIsConnected();
+static void clearFscTxQueue();
+static void enqueueFscFrame(uint8_t a, uint8_t b, uint8_t c);
+static void enqueueFscPosition(uint8_t base, int value0to255);
 static bool resyncFscLatchingInputs(const FscState& state);
 static void scheduleFscAxisResync();
 static bool resyncFscDetentAxes();
@@ -6110,7 +6124,7 @@ void updateFscCalibration(const FscState& inputState) {
         return;
     }
     if (!g_fscCalib.safeOutputsSent && g_fscCalib.type == Prefs::FscType::Motorized && fscIsConnected()) {
-        fscWriteFrame(0x93, 0x00, 0x00);  // motors off
+        enqueueFscFrame(0x93, 0x00, 0x00);  // motors off
         g_fscMotorThrottleActive.store(false);
         g_fscMotorSpeedbrakeActive.store(false);
         g_fscCalib.safeOutputsSent = true;
@@ -6125,6 +6139,30 @@ void updateFscCalibration(const FscState& inputState) {
 
 bool fscIsConnected() {
     return g_fscFd.load() >= 0;
+}
+
+static void clearFscTxQueue() {
+    std::lock_guard<std::mutex> lock(g_fscTxMutex);
+    g_fscTxQueue.clear();
+}
+
+static void enqueueFscFrame(uint8_t a, uint8_t b, uint8_t c) {
+    if (!g_fscRunning.load()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_fscTxMutex);
+    if (g_fscTxQueue.size() >= kFscTxQueueMax) {
+        g_fscTxQueue.pop_front();
+    }
+    g_fscTxQueue.push_back(FscTxFrame{a, b, c});
+}
+
+static void enqueueFscPosition(uint8_t base, int value0to255) {
+    if (value0to255 < 0) value0to255 = 0;
+    if (value0to255 > 255) value0to255 = 255;
+    uint8_t msb = static_cast<uint8_t>((value0to255 >= 128) ? 1 : 0);
+    uint8_t low7 = static_cast<uint8_t>(value0to255 & 0x7F);
+    enqueueFscFrame(0x8b, static_cast<uint8_t>(base | msb), low7);
 }
 
 void processFscOutputs(const FscState& inputState) {
@@ -6154,9 +6192,9 @@ void processFscOutputs(const FscState& inputState) {
     if (!motorizedHw || !g_fscProfileRuntime.motorized.enabled) {
         if (parkLightChanged) {
             if (parkLightOn) {
-                fscWriteFrame(0x87, 0x11, 0x00);
+                enqueueFscFrame(0x87, 0x11, 0x00);
             } else {
-                fscWriteFrame(0x87, 0x10, 0x00);
+                enqueueFscFrame(0x87, 0x10, 0x00);
             }
             g_fscOut.parkBrakeLightKnown = true;
             g_fscOut.parkBrakeLightOn = parkLightOn;
@@ -6251,12 +6289,12 @@ void processFscOutputs(const FscState& inputState) {
         // digital outputs (including backlight). Send the park-light command first,
         // then reapply the shared digital mask to restore the intended outputs.
         if (parkLightShouldBeOn) {
-            fscWriteFrame(0x87, 0x11, 0x00);
+            enqueueFscFrame(0x87, 0x11, 0x00);
             if (desiredMask != 0) {
-                fscWriteFrame(0x87, 0x10, desiredMask);
+                enqueueFscFrame(0x87, 0x10, desiredMask);
             }
         } else {
-            fscWriteFrame(0x87, 0x10, desiredMask);
+            enqueueFscFrame(0x87, 0x10, desiredMask);
         }
         g_fscOut.digitalMask = desiredMask;
     };
@@ -6264,7 +6302,7 @@ void processFscOutputs(const FscState& inputState) {
     bool needDigitalWrite = (digitalMask != g_fscOut.digitalMask);
     if (parkLightChanged && !parkLightOn) {
         // Some firmwares use 0x87 0x10 0x00 as park-brake-light OFF.
-        fscWriteFrame(0x87, 0x10, 0x00);
+        enqueueFscFrame(0x87, 0x10, 0x00);
         if (digitalMask != 0) {
             writeMotorizedDigitalState(digitalMask, false);
         } else {
@@ -6280,7 +6318,7 @@ void processFscOutputs(const FscState& inputState) {
         // underlying shared digital state changed or the light itself toggled.
         // Continuous refresh was shown to strobe the light and actuate the
         // park-brake mechanism on real hardware.
-        fscWriteFrame(0x87, 0x11, 0x00);
+        enqueueFscFrame(0x87, 0x11, 0x00);
     }
     if (parkLightChanged) {
         g_fscOut.parkBrakeLightKnown = true;
@@ -6330,11 +6368,11 @@ void processFscOutputs(const FscState& inputState) {
             // leave the hardware motors unpowered after a short movement.
             refreshThrottleMotorPower = true;
             if (motorThr1 != g_fscOut.motorThrottle1Pos) {
-                fscWritePosition(0x00, motorThr1);
+                enqueueFscPosition(0x00, motorThr1);
                 g_fscOut.motorThrottle1Pos = motorThr1;
             }
             if (motorThr2 != g_fscOut.motorThrottle2Pos) {
-                fscWritePosition(0x10, motorThr2);
+                enqueueFscPosition(0x10, motorThr2);
                 g_fscOut.motorThrottle2Pos = motorThr2;
             }
             g_fscOut.lastThrottleUpdate = now;
@@ -6361,13 +6399,13 @@ void processFscOutputs(const FscState& inputState) {
             getPrefIntByKey(motor.speedbrake.motorUpRef, motorUp)) {
             if (ratio >= motor.speedbrake.ratioUpMin && std::abs(sb - armRef) <= motor.speedbrake.tolerance) {
                 g_fscOut.motorSpeedbrakePos = motorUp;
-                fscWritePosition(0x20, g_fscOut.motorSpeedbrakePos);
+                enqueueFscPosition(0x20, g_fscOut.motorSpeedbrakePos);
                 g_fscOut.speedbrakeMotorOffTime = now + std::chrono::milliseconds(motor.speedbrake.holdMs);
                 speedbrakeMotorActive = true;
                 digitalMask |= 0x04;
             } else if (ratio <= motor.speedbrake.ratioDownMax && std::abs(sb - upRef) <= motor.speedbrake.tolerance) {
                 g_fscOut.motorSpeedbrakePos = motorDown;
-                fscWritePosition(0x20, g_fscOut.motorSpeedbrakePos);
+                enqueueFscPosition(0x20, g_fscOut.motorSpeedbrakePos);
                 g_fscOut.speedbrakeMotorOffTime = now + std::chrono::milliseconds(motor.speedbrake.holdMs);
                 speedbrakeMotorActive = true;
                 digitalMask |= 0x04;
@@ -6398,7 +6436,7 @@ void processFscOutputs(const FscState& inputState) {
                 target = std::clamp(target, std::min(arrowMin, arrowMax), std::max(arrowMin, arrowMax));
                 if (target != g_fscOut.motorTrimIndPos) {
                     g_fscOut.motorTrimIndPos = target;
-                    fscWritePosition(0x30, target);
+                    enqueueFscPosition(0x30, target);
                     g_fscOut.trimIndMotorOffTime = now + std::chrono::milliseconds(motor.trimIndicator.holdMs);
                     trimIndMotorActive = true;
                 }
@@ -6419,7 +6457,7 @@ void processFscOutputs(const FscState& inputState) {
         refreshTimedMotorPower = true;
     }
     if (motorPower != g_fscOut.motorPowerMask || refreshThrottleMotorPower || refreshTimedMotorPower) {
-        fscWriteFrame(0x93, 0x00, motorPower);
+        enqueueFscFrame(0x93, 0x00, motorPower);
         g_fscOut.motorPowerMask = motorPower;
         g_fscOut.lastMotorPowerRefresh = now;
     }
@@ -6468,6 +6506,25 @@ void fscLoop() {
         }
     };
 
+    auto flushTxQueue = [&]() {
+        while (g_fscRunning.load()) {
+            FscTxFrame frame{};
+            {
+                std::lock_guard<std::mutex> lock(g_fscTxMutex);
+                if (g_fscTxQueue.empty()) {
+                    break;
+                }
+                frame = g_fscTxQueue.front();
+                g_fscTxQueue.pop_front();
+            }
+            fscWriteFrame(frame.a, frame.b, frame.c);
+            if (g_fscFd.load() < 0) {
+                clearFscTxQueue();
+                break;
+            }
+        }
+    };
+
     while (g_fscRunning.load()) {
         intptr_t currentHandle = g_fscFd.load();
         if (currentHandle < 0) {
@@ -6497,13 +6554,15 @@ void fscLoop() {
             lastRx = lastPoll;
         }
 
+        flushTxQueue();
+
         uint8_t b1 = 0;
         currentHandle = g_fscFd.load();
         if (currentHandle < 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
-        int r1 = readByteWithTimeout(currentHandle, b1, 500);
+        int r1 = readByteWithTimeout(currentHandle, b1, 20);
         if (r1 == 0) {
             auto now = std::chrono::steady_clock::now();
             if (rawCaptureActive && now > rawCaptureUntil) {
@@ -6564,7 +6623,7 @@ void fscLoop() {
         if (currentHandle < 0) {
             continue;
         }
-        int r2 = readByteWithTimeout(currentHandle, b2, 100);
+        int r2 = readByteWithTimeout(currentHandle, b2, 10);
         if (r2 <= 0) {
             if (r2 < 0) {
                 ++badReads;
@@ -6622,6 +6681,7 @@ void startFsc() {
     }
     g_fscMotorThrottleActive.store(false);
     g_fscMotorSpeedbrakeActive.store(false);
+    clearFscTxQueue();
     g_fscRunning.store(true);
     g_fscThread = std::thread(fscLoop);
     g_fscActiveProfileId = g_fscProfileId;
@@ -6642,6 +6702,7 @@ void stopFsc() {
     if (g_fscThread.joinable()) {
         g_fscThread.join();
     }
+    clearFscTxQueue();
     g_fscActiveProfileId.clear();
 }
 
