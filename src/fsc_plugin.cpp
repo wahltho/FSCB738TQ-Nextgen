@@ -317,6 +317,7 @@ struct FscTxFrame {
 
 std::deque<FscTxFrame> g_fscTxQueue;
 constexpr size_t kFscTxQueueMax = 512;
+constexpr size_t kFscTxBatchFrames = 32;
 
 std::atomic<bool> g_fscMotorThrottleActive{false};
 std::atomic<bool> g_fscMotorSpeedbrakeActive{false};
@@ -4370,6 +4371,17 @@ static intptr_t openFscPort(const std::string& port, const Prefs::FscSerial& ser
         return -1;
     }
 
+    COMMTIMEOUTS timeouts{};
+    timeouts.ReadIntervalTimeout = MAXDWORD;
+    timeouts.ReadTotalTimeoutMultiplier = 0;
+    timeouts.ReadTotalTimeoutConstant = 20;
+    timeouts.WriteTotalTimeoutMultiplier = 0;
+    timeouts.WriteTotalTimeoutConstant = 0;
+    if (!SetCommTimeouts(h, &timeouts)) {
+        CloseHandle(h);
+        return -1;
+    }
+
     return reinterpret_cast<intptr_t>(h);
 #else
     std::string effectivePort = port;
@@ -4453,15 +4465,7 @@ int readByteWithTimeout(intptr_t handle, uint8_t& out, int timeoutMs) {
         SetLastError(ERROR_INVALID_HANDLE);
         return -1;
     }
-    COMMTIMEOUTS timeouts{};
-    timeouts.ReadIntervalTimeout = MAXDWORD;
-    timeouts.ReadTotalTimeoutMultiplier = 0;
-    timeouts.ReadTotalTimeoutConstant = static_cast<DWORD>(timeoutMs);
-    timeouts.WriteTotalTimeoutMultiplier = 0;
-    timeouts.WriteTotalTimeoutConstant = 0;
-    if (!SetCommTimeouts(h, &timeouts)) {
-        return -1;
-    }
+    (void)timeoutMs;
     DWORD bytesRead = 0;
     if (!ReadFile(h, &out, 1, &bytesRead, nullptr)) {
         return -1;
@@ -6151,6 +6155,40 @@ static void enqueueFscFrame(uint8_t a, uint8_t b, uint8_t c) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_fscTxMutex);
+    auto replaceLastMatching = [&](auto&& predicate) {
+        for (auto it = g_fscTxQueue.rbegin(); it != g_fscTxQueue.rend(); ++it) {
+            if (predicate(*it)) {
+                it->a = a;
+                it->b = b;
+                it->c = c;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Coalesce steady-state traffic so the queue carries only the latest value
+    // for position channels, digital mask state, and motor power state.
+    if (a == 0x8b) {
+        uint8_t channel = static_cast<uint8_t>(b & 0xF0);
+        if (replaceLastMatching([&](const FscTxFrame& frame) {
+                return frame.a == 0x8b && (frame.b & 0xF0) == channel;
+            })) {
+            return;
+        }
+    } else if (a == 0x87 && b == 0x10 && c != 0x00) {
+        if (replaceLastMatching([&](const FscTxFrame& frame) {
+                return frame.a == 0x87 && frame.b == 0x10 && frame.c != 0x00;
+            })) {
+            return;
+        }
+    } else if (a == 0x93 && b == 0x00 && c != 0x10) {
+        if (replaceLastMatching([&](const FscTxFrame& frame) {
+                return frame.a == 0x93 && frame.b == 0x00 && frame.c != 0x10;
+            })) {
+            return;
+        }
+    }
     if (g_fscTxQueue.size() >= kFscTxQueueMax) {
         g_fscTxQueue.pop_front();
     }
@@ -6507,18 +6545,51 @@ void fscLoop() {
     };
 
     auto flushTxQueue = [&]() {
+        std::array<FscTxFrame, kFscTxBatchFrames> batch{};
+        size_t count = 0;
         while (g_fscRunning.load()) {
-            FscTxFrame frame{};
             {
                 std::lock_guard<std::mutex> lock(g_fscTxMutex);
                 if (g_fscTxQueue.empty()) {
                     break;
                 }
-                frame = g_fscTxQueue.front();
-                g_fscTxQueue.pop_front();
+                while (count < batch.size() && !g_fscTxQueue.empty()) {
+                    batch[count++] = g_fscTxQueue.front();
+                    g_fscTxQueue.pop_front();
+                }
             }
-            fscWriteFrame(frame.a, frame.b, frame.c);
-            if (g_fscFd.load() < 0) {
+            if (count == 0) {
+                break;
+            }
+
+            std::array<uint8_t, kFscTxBatchFrames * 3> bytes{};
+            for (size_t i = 0; i < count; ++i) {
+                bytes[i * 3 + 0] = batch[i].a;
+                bytes[i * 3 + 1] = batch[i].b;
+                bytes[i * 3 + 2] = batch[i].c;
+            }
+
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lock(g_fscIoMutex);
+                intptr_t handle = g_fscFd.load();
+                if (handle >= 0) {
+                    ok = fscWriteBytes(handle, bytes.data(), count * 3);
+                    if (!ok) {
+#if IBM
+                        DWORD e = GetLastError();
+                        logLine("FSC: write failed (" + std::to_string(e) + "): " + win32ErrorMessage(e));
+#else
+                        int e = errno;
+                        logLine("FSC: write failed (" + std::to_string(e) + "): " + std::strerror(e));
+#endif
+                        closeFscPort(handle);
+                        g_fscFd.store(-1);
+                    }
+                }
+            }
+            count = 0;
+            if (!ok || g_fscFd.load() < 0) {
                 clearFscTxQueue();
                 break;
             }
