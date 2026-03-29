@@ -318,6 +318,7 @@ struct FscTxFrame {
 std::deque<FscTxFrame> g_fscTxQueue;
 constexpr size_t kFscTxQueueMax = 512;
 constexpr size_t kFscTxBatchFrames = 32;
+constexpr uint8_t kFscMotorTrimWheelSpeedDefault = 8;
 
 std::atomic<bool> g_fscMotorThrottleActive{false};
 std::atomic<bool> g_fscMotorSpeedbrakeActive{false};
@@ -327,6 +328,7 @@ struct FscOutputState {
     bool parkBrakeLightOn = false;
     uint8_t digitalMask = 0;
     uint8_t motorPowerMask = 0;
+    int trimWheelSpeed = -1;
     int motorThrottle1Pos = -1;
     int motorThrottle2Pos = -1;
     int motorSpeedbrakePos = -1;
@@ -6176,9 +6178,9 @@ static void enqueueFscFrame(uint8_t a, uint8_t b, uint8_t c) {
             })) {
             return;
         }
-    } else if (a == 0x87 && b == 0x10 && c != 0x00) {
+    } else if (a == 0x87 && (b == 0x10 || b == 0x11)) {
         if (replaceLastMatching([&](const FscTxFrame& frame) {
-                return frame.a == 0x87 && frame.b == 0x10 && frame.c != 0x00;
+                return frame.a == 0x87 && (frame.b == 0x10 || frame.b == 0x11);
             })) {
             return;
         }
@@ -6243,6 +6245,11 @@ void processFscOutputs(const FscState& inputState) {
     const auto& motor = g_fscProfileRuntime.motorized;
     auto now = std::chrono::steady_clock::now();
 
+    if (g_fscOut.trimWheelSpeed != kFscMotorTrimWheelSpeedDefault) {
+        enqueueFscFrame(0x8b, 0x60, kFscMotorTrimWheelSpeedDefault);
+        g_fscOut.trimWheelSpeed = kFscMotorTrimWheelSpeedDefault;
+    }
+
     // Decide if we are currently moving motorized speedbrake/trim indicator.
     bool speedbrakeMotorActive = now < g_fscOut.speedbrakeMotorOffTime;
     bool trimIndMotorActive = now < g_fscOut.trimIndMotorOffTime;
@@ -6250,7 +6257,6 @@ void processFscOutputs(const FscState& inputState) {
 
     // Digital state mask (solenoids/backlight/trim motor direction)
     uint8_t digitalMask = 0;
-    bool wroteDigital = false;
     bool onGround = false;
     if (motor.onGroundDataref) {
         float value = 0.0f;
@@ -6280,7 +6286,7 @@ void processFscOutputs(const FscState& inputState) {
         }
     }
     if (parkSolenoid) {
-        digitalMask |= 0x08;
+        digitalMask |= 0x08;  // park brake solenoid
     }
 
     // Backlight follows battery bus status.
@@ -6322,45 +6328,21 @@ void processFscOutputs(const FscState& inputState) {
         g_fscOut.lastTrimWheel = trimWheel;
     }
 
+    bool desiredParkLightOn = parkLightAvailable ? parkLightOn : g_fscOut.parkBrakeLightOn;
+
     auto writeMotorizedDigitalState = [&](uint8_t desiredMask, bool parkLightShouldBeOn) {
-        // On MOTORIZED units, the park-brake-light ON command can blank the shared
-        // digital outputs (including backlight). Send the park-light command first,
-        // then reapply the shared digital mask to restore the intended outputs.
-        if (parkLightShouldBeOn) {
-            enqueueFscFrame(0x87, 0x11, 0x00);
-            if (desiredMask != 0) {
-                enqueueFscFrame(0x87, 0x10, desiredMask);
-            }
-        } else {
-            enqueueFscFrame(0x87, 0x10, desiredMask);
-        }
+        // Legacy MOTORIZED behavior uses one shared 0x87 frame:
+        // byte 2 selects PB light OFF/ON (0x10/0x11), byte 3 carries the
+        // shared digital mask for backlight, solenoids, and trim-wheel drive.
+        enqueueFscFrame(0x87, parkLightShouldBeOn ? 0x11 : 0x10, desiredMask);
         g_fscOut.digitalMask = desiredMask;
+        g_fscOut.parkBrakeLightKnown = true;
+        g_fscOut.parkBrakeLightOn = parkLightShouldBeOn;
     };
 
-    bool needDigitalWrite = (digitalMask != g_fscOut.digitalMask);
-    if (parkLightChanged && !parkLightOn) {
-        // Some firmwares use 0x87 0x10 0x00 as park-brake-light OFF.
-        enqueueFscFrame(0x87, 0x10, 0x00);
-        if (digitalMask != 0) {
-            writeMotorizedDigitalState(digitalMask, false);
-        } else {
-            g_fscOut.digitalMask = 0;
-        }
-        wroteDigital = true;
-    } else if (needDigitalWrite) {
-        writeMotorizedDigitalState(digitalMask, false);
-        wroteDigital = true;
-    }
-    if (parkLightOn && (parkLightChanged || wroteDigital)) {
-        // On MOTORIZED units, reassert the park-brake light only when the
-        // underlying shared digital state changed or the light itself toggled.
-        // Continuous refresh was shown to strobe the light and actuate the
-        // park-brake mechanism on real hardware.
-        enqueueFscFrame(0x87, 0x11, 0x00);
-    }
-    if (parkLightChanged) {
-        g_fscOut.parkBrakeLightKnown = true;
-        g_fscOut.parkBrakeLightOn = parkLightOn;
+    bool needDigitalWrite = (digitalMask != g_fscOut.digitalMask) || parkLightChanged;
+    if (needDigitalWrite) {
+        writeMotorizedDigitalState(digitalMask, desiredParkLightOn);
     }
 
     // Motorized throttle motors (follow Zibo thrust lever when autothrottle locks throttles).
@@ -6450,7 +6432,7 @@ void processFscOutputs(const FscState& inputState) {
             }
         }
         if (speedbrakeMotorActive && digitalMask != g_fscOut.digitalMask) {
-            writeMotorizedDigitalState(digitalMask, parkLightOn);
+            writeMotorizedDigitalState(digitalMask, desiredParkLightOn);
         }
     }
     g_fscMotorSpeedbrakeActive.store(speedbrakeMotorActive);

@@ -65,6 +65,17 @@ Menus:
 - Bits 4 and 5 of the `0x10` packet are used for trim-wheel quadrature decoding.
 - Important when reading RAW logs: bytes such as `0xAC 0x..` are `0x2C` packets after command masking and belong to speedbrake, not flaps.
 - The old Lua logic documented only the logical flap detent values (`0, 1, 2, 5, 10, 15, 25, 30, 40`), not the exact `0x10` nibble-to-detent mapping. Real RAW logs from a MOTORIZED unit were required to confirm the complete Gray-code sequence.
+- Reverse-engineered `MOTORIZED` output note from the legacy `win.xpl` plus `B738X.FSC_throttle_motorized.lua`:
+  - digital outputs use a shared `0x87` frame, not separate independent lamp frames.
+  - byte 2 is `0x10` with parking-brake light OFF and `0x11` with parking-brake light ON.
+  - byte 3 is a shared digital mask.
+  - current best-known legacy mask mapping is:
+    - `0x04` = park-brake solenoid
+    - `0x08` = speed-brake solenoid
+    - `0x10` = backlight
+    - `0x20` = trim-wheel motor direction 1
+    - `0x40` = trim-wheel motor direction 2
+- This `0x87` motorized output mapping is reverse-engineered behavior, not yet explicitly confirmed by the official FSC protocol text.
 
 ## Datarefs / outputs (FSC)
 - Throttles (all FSC types, when throttle motor is not active):  
