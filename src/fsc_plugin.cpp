@@ -1,4 +1,5 @@
 #include "plugin_config.h"
+#include "fsc_embedded.h"
 
 #if IBM
 #ifndef NOMINMAX
@@ -161,6 +162,17 @@ struct Prefs {
 bool g_pluginEnabled = false;
 std::ofstream g_fileLog;
 std::mutex g_logMutex;
+struct EmbeddedHostConfigState {
+    bool embeddedMode = false;
+    bool hostOwnsMenu = false;
+    bool hostOwnsLogging = false;
+    std::string prefsPathOverride;
+    std::string profilesDirOverride;
+    FscEmbeddedLogCallback logCallback = nullptr;
+    void* logCallbackRefcon = nullptr;
+};
+std::mutex g_embeddedHostConfigMutex;
+EmbeddedHostConfigState g_embeddedHostConfig;
 enum class RawLogDir {
     None,
     Rx,
@@ -529,17 +541,26 @@ static void reloadPrefs();
 void logLine(const std::string& msg);
 static void updateFscLifecycle(const char* reason);
 
-std::string getPrefsPath() {
-    char sysPath[512]{};
-    XPLMGetSystemPath(sysPath);
-    std::string base(sysPath);
-    if (!base.empty() && base.back() != '/' && base.back() != '\\') {
-        base.push_back('/');
-    }
-    return base + "Output/preferences/" + std::string(PLUGIN_PREFS_FILE);
+static EmbeddedHostConfigState getEmbeddedHostConfigSnapshot() {
+    std::lock_guard<std::mutex> lock(g_embeddedHostConfigMutex);
+    return g_embeddedHostConfig;
 }
 
-std::string makePluginPath(const std::string& relative) {
+static bool embeddedModeActive(const EmbeddedHostConfigState& cfg) {
+    return cfg.embeddedMode;
+}
+
+static bool embeddedHostOwnsMenu() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    return embeddedModeActive(cfg) && cfg.hostOwnsMenu;
+}
+
+static bool embeddedHostOwnsLogging() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    return embeddedModeActive(cfg) && cfg.hostOwnsLogging;
+}
+
+static std::string makeSystemPath(const std::string& relative) {
     char sysPath[512]{};
     XPLMGetSystemPath(sysPath);
     std::string base(sysPath);
@@ -547,6 +568,18 @@ std::string makePluginPath(const std::string& relative) {
         base.push_back('/');
     }
     return base + relative;
+}
+
+std::string getPrefsPath() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    if (embeddedModeActive(cfg) && !cfg.prefsPathOverride.empty()) {
+        return cfg.prefsPathOverride;
+    }
+    return makeSystemPath("Output/preferences/" + std::string(PLUGIN_PREFS_FILE));
+}
+
+std::string makePluginPath(const std::string& relative) {
+    return makeSystemPath(relative);
 }
 
 static void parseFscType(const std::string& val, Prefs::FscType& out) {
@@ -2243,6 +2276,10 @@ static bool parseFscProfile(const JsonValue& root,
 }
 
 static std::string fscProfilesDir() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    if (embeddedModeActive(cfg) && !cfg.profilesDirOverride.empty()) {
+        return cfg.profilesDirOverride;
+    }
     return makePluginPath("Resources/plugins/" + std::string(PLUGIN_DIR) + "/profiles");
 }
 
@@ -2607,18 +2644,36 @@ Prefs loadPrefs() {
 }
 
 void logLine(const std::string& msg) {
-    std::string line = "[" + std::string(PLUGIN_LOG_PREFIX) + "] " + msg + "\n";
-    std::lock_guard<std::mutex> lock(g_logMutex);
-    XPLMDebugString(line.c_str());
-    if (g_fileLog.is_open()) {
-        g_fileLog << line;
-        g_fileLog.flush();
+    std::string formatted = "[" + std::string(PLUGIN_LOG_PREFIX) + "] " + msg;
+    std::string line = formatted + "\n";
+    FscEmbeddedLogCallback callback = nullptr;
+    void* callbackRefcon = nullptr;
+    {
+        const auto cfg = getEmbeddedHostConfigSnapshot();
+        if (embeddedModeActive(cfg)) {
+            callback = cfg.logCallback;
+            callbackRefcon = cfg.logCallbackRefcon;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_logMutex);
+        XPLMDebugString(line.c_str());
+        if (g_fileLog.is_open()) {
+            g_fileLog << line;
+            g_fileLog.flush();
+        }
+    }
+    if (callback) {
+        callback(formatted.c_str(), callbackRefcon);
     }
 }
 
 static void openLogFileFromPrefs() {
     if (g_fileLog.is_open()) {
         g_fileLog.close();
+    }
+    if (embeddedHostOwnsLogging()) {
+        return;
     }
     if (!g_prefs.logfileEnabled) {
         return;
@@ -2850,6 +2905,9 @@ static void openRawLogFromPrefs() {
     g_fscRawLogLineBytes = 0;
     g_fscRawLogLineDir = RawLogDir::None;
 
+    if (embeddedHostOwnsLogging()) {
+        return;
+    }
     if (!g_prefs.fsc.rawLog) {
         return;
     }
@@ -3932,6 +3990,9 @@ static void menuHandler(void* /*inMenuRef*/, void* inItemRef) {
 }
 
 static void createPluginMenu() {
+    if (embeddedHostOwnsMenu()) {
+        return;
+    }
     if (g_menuId) {
         return;
     }
@@ -6903,6 +6964,30 @@ static void fscPluginReceiveMessageCommon(int inMessage) {
 }  // namespace
 
 #if defined(FSC_EMBEDDED)
+void FscEmbedded_SetHostConfig(const FscEmbeddedHostConfig* config) {
+    EmbeddedHostConfigState next;
+    if (config) {
+        next.embeddedMode = config->embedded_mode != 0;
+        next.hostOwnsMenu = config->host_owns_menu != 0;
+        next.hostOwnsLogging = config->host_owns_logging != 0;
+        if (config->prefs_path_override) {
+            next.prefsPathOverride = config->prefs_path_override;
+        }
+        if (config->profiles_dir_override) {
+            next.profilesDirOverride = config->profiles_dir_override;
+        }
+        next.logCallback = config->log_callback;
+        next.logCallbackRefcon = config->log_callback_refcon;
+    }
+    std::lock_guard<std::mutex> lock(g_embeddedHostConfigMutex);
+    g_embeddedHostConfig = std::move(next);
+}
+
+void FscEmbedded_ResetHostConfig() {
+    std::lock_guard<std::mutex> lock(g_embeddedHostConfigMutex);
+    g_embeddedHostConfig = EmbeddedHostConfigState{};
+}
+
 void FscEmbedded_Start() {
     fscPluginStartCommon(true);
 }
