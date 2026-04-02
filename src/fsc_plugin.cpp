@@ -170,6 +170,8 @@ struct EmbeddedHostConfigState {
     std::string profilesDirOverride;
     FscEmbeddedLogCallback logCallback = nullptr;
     void* logCallbackRefcon = nullptr;
+    FscEmbeddedPrefsReloadCallback prefsReloadCallback = nullptr;
+    void* prefsReloadCallbackRefcon = nullptr;
 };
 std::mutex g_embeddedHostConfigMutex;
 EmbeddedHostConfigState g_embeddedHostConfig;
@@ -558,6 +560,14 @@ static bool embeddedHostOwnsMenu() {
 static bool embeddedHostOwnsLogging() {
     const auto cfg = getEmbeddedHostConfigSnapshot();
     return embeddedModeActive(cfg) && cfg.hostOwnsLogging;
+}
+
+static void notifyEmbeddedHostPrefsReload() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    if (!embeddedModeActive(cfg) || !cfg.prefsReloadCallback) {
+        return;
+    }
+    cfg.prefsReloadCallback(cfg.prefsReloadCallbackRefcon);
 }
 
 static std::string makeSystemPath(const std::string& relative) {
@@ -2348,6 +2358,13 @@ static bool loadFscProfiles() {
         if (!parseJson(text, root, parseErr)) {
             logLine("FSC: invalid JSON in " + path.string() + ": " + parseErr);
             hasErrors = true;
+            continue;
+        }
+
+        // Embedded CPFlight stores both FSC and CPFlight profiles in one directory.
+        // Ignore CPFlight-native profiles here and only validate actual FSC schema files.
+        if (root.type == JsonValue::Type::Object &&
+            (jsonGet(root, "inputs") != nullptr || jsonGet(root, "outputs") != nullptr)) {
             continue;
         }
 
@@ -6848,6 +6865,7 @@ static void reloadPrefs() {
     syncFscWindowFromPrefs();
     loadFscProfiles();
     refreshFscProfile(true);
+    notifyEmbeddedHostPrefsReload();
 
     if (wasEnabled) {
         updateFscLifecycle("prefs reload");
@@ -6978,6 +6996,8 @@ void FscEmbedded_SetHostConfig(const FscEmbeddedHostConfig* config) {
         }
         next.logCallback = config->log_callback;
         next.logCallbackRefcon = config->log_callback_refcon;
+        next.prefsReloadCallback = config->prefs_reload_callback;
+        next.prefsReloadCallbackRefcon = config->prefs_reload_callback_refcon;
     }
     std::lock_guard<std::mutex> lock(g_embeddedHostConfigMutex);
     g_embeddedHostConfig = std::move(next);
@@ -7010,6 +7030,10 @@ void FscEmbedded_OnMessage(int inMessage) {
 
 void FscEmbedded_ReloadPrefs() {
     reloadPrefs();
+}
+
+void FscEmbedded_ToggleWindow() {
+    toggleFscWindow();
 }
 #endif
 
