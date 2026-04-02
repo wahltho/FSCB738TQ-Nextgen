@@ -41,7 +41,7 @@ For full details, see:
 
 ## Profiles and schema
 - Profiles live in <X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/profiles/.
-- Zibo profile is shipped in deploy/FSCB738TQ-Nextgen/profiles/zibo_b738.json.
+- Zibo profile is shipped in deploy/FSCB738TQ-Nextgen/profiles/FSC_zibo_b738.json.
 - Matching is by exact tailnum (case-sensitive); no default profile.
 - If no profile matches, FSC outputs stay disabled.
 - Profiles are validated at startup; duplicates or errors disable FSC and are logged.

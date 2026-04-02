@@ -100,7 +100,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 
 **Location**
 - `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/profiles/`
-- Example file in this repo: `deploy/FSCB738TQ-Nextgen/profiles/zibo_b738.json`
+- Example file in this repo: `deploy/FSCB738TQ-Nextgen/profiles/FSC_zibo_b738.json`
 
 **Selection (current behavior)**
 - Each profile contains `aircraft_match.tailnums`, an exact, case-sensitive list.
