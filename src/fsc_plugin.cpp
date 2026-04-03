@@ -68,6 +68,8 @@
 namespace {
 
 static const char* kPluginVersion = PLUGIN_VERSION;
+static const char* kPeerCpflightSignature = PEER_CPFLIGHT_PLUGIN_SIGNATURE;
+constexpr auto kStandaloneCoexistencePollInterval = std::chrono::milliseconds(250);
 
 #if IBM
 using socket_t = SOCKET;
@@ -160,6 +162,10 @@ struct Prefs {
 };
 
 bool g_pluginEnabled = false;
+bool g_coexistenceAllowsRun = true;
+std::string g_coexistenceReason = "peer_missing";
+std::string g_lastCoexistenceKey;
+std::chrono::steady_clock::time_point g_nextCoexistencePollDue{};
 std::ofstream g_fileLog;
 std::mutex g_logMutex;
 struct EmbeddedHostConfigState {
@@ -542,6 +548,7 @@ static bool writeFscSettingsToPrefsFile(const Prefs& prefs);
 static void reloadPrefs();
 void logLine(const std::string& msg);
 static void updateFscLifecycle(const char* reason);
+static bool refreshStandaloneCoexistence(const char* reason);
 
 static EmbeddedHostConfigState getEmbeddedHostConfigSnapshot() {
     std::lock_guard<std::mutex> lock(g_embeddedHostConfigMutex);
@@ -560,6 +567,128 @@ static bool embeddedHostOwnsMenu() {
 static bool embeddedHostOwnsLogging() {
     const auto cfg = getEmbeddedHostConfigSnapshot();
     return embeddedModeActive(cfg) && cfg.hostOwnsLogging;
+}
+
+static bool standaloneCoexistenceApplies() {
+    const auto cfg = getEmbeddedHostConfigSnapshot();
+    return !embeddedModeActive(cfg);
+}
+
+static std::vector<int> parseVersionNumbers(const std::string& text, bool& ok) {
+    std::vector<int> parts;
+    ok = false;
+    if (text.empty()) {
+        return parts;
+    }
+
+    std::string current;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            current.push_back(c);
+            continue;
+        }
+        if (c == '.') {
+            if (current.empty()) {
+                return {};
+            }
+            parts.push_back(std::stoi(current));
+            current.clear();
+            continue;
+        }
+        if (!current.empty()) {
+            break;
+        }
+        return {};
+    }
+
+    if (current.empty()) {
+        return {};
+    }
+    parts.push_back(std::stoi(current));
+    ok = !parts.empty();
+    return parts;
+}
+
+static int compareVersions(const std::string& lhs, const std::string& rhs, bool& comparable) {
+    bool lhsOk = false;
+    bool rhsOk = false;
+    const auto lhsParts = parseVersionNumbers(lhs, lhsOk);
+    const auto rhsParts = parseVersionNumbers(rhs, rhsOk);
+    comparable = lhsOk && rhsOk;
+    if (!comparable) {
+        return 0;
+    }
+
+    const size_t count = std::max(lhsParts.size(), rhsParts.size());
+    for (size_t i = 0; i < count; ++i) {
+        const int l = i < lhsParts.size() ? lhsParts[i] : 0;
+        const int r = i < rhsParts.size() ? rhsParts[i] : 0;
+        if (l < r) {
+            return -1;
+        }
+        if (l > r) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static std::string extractEmbeddedFscVersionFromPeerDescription(const std::string& desc) {
+    static const std::string marker = "embedded FSC v";
+    const auto pos = desc.find(marker);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    std::string version;
+    for (size_t i = pos + marker.size(); i < desc.size(); ++i) {
+        const char c = desc[i];
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
+            version.push_back(c);
+            continue;
+        }
+        break;
+    }
+    return version;
+}
+
+static bool refreshStandaloneCoexistence(const char* reason) {
+    std::string nextReason = "peer_missing";
+    bool nextAllowsRun = true;
+
+    if (!standaloneCoexistenceApplies()) {
+        nextReason = "embedded_mode_host_controls";
+    } else {
+        XPLMPluginID peerId = XPLMFindPluginBySignature(kPeerCpflightSignature);
+        if (peerId != XPLM_NO_PLUGIN_ID && XPLMIsPluginEnabled(peerId)) {
+            char description[256]{};
+            XPLMGetPluginInfo(peerId, nullptr, nullptr, nullptr, description);
+            const std::string peerEmbeddedVersion = extractEmbeddedFscVersionFromPeerDescription(description);
+            bool comparable = false;
+            const int cmp = compareVersions(kPluginVersion, peerEmbeddedVersion, comparable);
+            if (comparable && cmp < 0) {
+                nextAllowsRun = false;
+                nextReason = "peer_embedded_newer";
+            } else if (!comparable) {
+                nextReason = "peer_enabled_version_unknown_keep_standalone";
+            } else {
+                nextReason = "standalone_newer_or_equal";
+            }
+        }
+    }
+
+    const std::string nextKey = std::string(nextAllowsRun ? "1" : "0") + "|" + nextReason;
+    if (nextKey == g_lastCoexistenceKey) {
+        return false;
+    }
+
+    g_coexistenceAllowsRun = nextAllowsRun;
+    g_coexistenceReason = nextReason;
+    g_lastCoexistenceKey = nextKey;
+
+    logLine("FSC coexistence: reason=" + g_coexistenceReason +
+            ", standalone_allowed=" + std::string(g_coexistenceAllowsRun ? "1" : "0") +
+            ", trigger=" + (reason ? reason : "unknown"));
+    return true;
 }
 
 static void notifyEmbeddedHostPrefsReload() {
@@ -4232,6 +4361,14 @@ float flightLoopCallback(
     float /*inElapsedTimeSinceLastFlightLoop*/,
     int /*inCounter*/,
     void* /*inRefcon*/) {
+    const auto now = std::chrono::steady_clock::now();
+    if (standaloneCoexistenceApplies() &&
+        (g_nextCoexistencePollDue.time_since_epoch().count() == 0 || now >= g_nextCoexistencePollDue)) {
+        if (refreshStandaloneCoexistence("poll")) {
+            updateFscLifecycle("coexistence poll");
+        }
+        g_nextCoexistencePollDue = now + kStandaloneCoexistencePollInterval;
+    }
     maybeRunFscDeferredInit();
 
     if (g_prefs.fsc.enabled) {
@@ -6838,7 +6975,7 @@ void stopFsc() {
 }
 
 static void updateFscLifecycle(const char* /*reason*/) {
-    bool shouldRun = g_pluginEnabled && g_prefs.fsc.enabled && g_fscProfileActive.load();
+    bool shouldRun = g_pluginEnabled && g_coexistenceAllowsRun && g_prefs.fsc.enabled && g_fscProfileActive.load();
     if (shouldRun) {
         if (g_fscRunning.load() && g_fscActiveProfileId != g_fscProfileId) {
             stopFsc();
@@ -6863,9 +7000,11 @@ static void reloadPrefs() {
     logLine("Prefs reloaded from " + getPrefsPath());
     logFscSettings();
     syncFscWindowFromPrefs();
+    g_nextCoexistencePollDue = {};
     loadFscProfiles();
     refreshFscProfile(true);
     notifyEmbeddedHostPrefsReload();
+    refreshStandaloneCoexistence("prefs reload");
 
     if (wasEnabled) {
         updateFscLifecycle("prefs reload");
@@ -6898,9 +7037,11 @@ static void fscPluginStartCommon(bool registerFlightLoop) {
     openRawLogFromPrefs();
     logLine(std::string("Plugin version ") + kPluginVersion);
     logFscSettings();
+    g_nextCoexistencePollDue = {};
 
     loadFscProfiles();
     refreshFscProfile(false);
+    refreshStandaloneCoexistence("start");
 
     auto cmdName = [](const char* suffix) {
         return std::string(PLUGIN_COMMAND_PREFIX) + "/" + suffix;
@@ -6967,13 +7108,21 @@ static void fscPluginDisableCommon() {
 
 static int fscPluginEnableCommon() {
     g_pluginEnabled = true;
+    g_nextCoexistencePollDue = {};
+    refreshStandaloneCoexistence("enable");
     updateFscLifecycle("plugin enable");
-    logLine("Enabled");
+    if (g_coexistenceAllowsRun) {
+        logLine("Enabled");
+    } else {
+        logLine("Enabled (standalone FSC self-suspended: " + g_coexistenceReason + ")");
+    }
     return 1;
 }
 
 static void fscPluginReceiveMessageCommon(int inMessage) {
     if (inMessage == XPLM_MSG_AIRPORT_LOADED || inMessage == XPLM_MSG_PLANE_LOADED) {
+        g_nextCoexistencePollDue = {};
+        refreshStandaloneCoexistence("aircraft load");
         refreshFscProfile(true);
         updateFscLifecycle("aircraft load");
     }
