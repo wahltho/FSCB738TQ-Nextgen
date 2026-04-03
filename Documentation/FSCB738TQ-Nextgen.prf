@@ -40,4 +40,4 @@ log.file=fscb738tq_nextgen.log
 # Throttle noise reduction (helps avoid false asymmetry / A/T dropouts)
 fsc.throttle_smooth_ms=60
 fsc.throttle_deadband=1
-fsc.throttle_sync_band=0.015
+fsc.throttle_sync_band=0.015000
