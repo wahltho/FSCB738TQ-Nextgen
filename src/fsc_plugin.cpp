@@ -547,6 +547,7 @@ static bool resyncFscDetentAxes();
 std::string fscCalibPrompt(FscCalibStep step, Prefs::FscType type);
 static bool writeFscSettingsToPrefsFile(const Prefs& prefs);
 static void reloadPrefs();
+std::string readTailnum();
 void logLine(const std::string& msg);
 static void updateFscLifecycle(const char* reason);
 static bool refreshStandaloneCoexistence(const char* reason);
@@ -573,6 +574,13 @@ static bool embeddedHostOwnsLogging() {
 static bool standaloneCoexistenceApplies() {
     const auto cfg = getEmbeddedHostConfigSnapshot();
     return !embeddedModeActive(cfg);
+}
+
+static std::string toLowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return text;
 }
 
 static std::vector<int> parseVersionNumbers(const std::string& text, bool& ok) {
@@ -1200,6 +1208,22 @@ struct FscProfileRecord {
     FscProfileRuntime runtime;
 };
 
+struct FscAircraftReadinessProbe {
+    std::string tailnum;
+    bool profileLooksLikeZibo = false;
+    bool ziboPluginPresent = true;
+    bool representativeCommandsReady = true;
+    bool representativeDatarefsReady = true;
+
+    bool aircraftConfirmed() const {
+        return !profileLooksLikeZibo || ziboPluginPresent;
+    }
+
+    bool representativeReady() const {
+        return representativeCommandsReady && representativeDatarefsReady;
+    }
+};
+
 static FscProfileRuntime g_fscProfileRuntime{};
 static std::array<FscSwitchState, static_cast<size_t>(FscSwitchId::Count)> g_fscSwitchState{};
 static std::atomic<bool> g_fscProfileActive{false};
@@ -1258,6 +1282,99 @@ static bool getPrefBoolByKey(const std::string& key, bool& out) {
     if (key == "fsc.speed_brake_reversed") { out = g_prefs.fsc.speedBrakeReversed; return true; }
     if (key == "fsc.fuel_lever_inverted") { out = g_prefs.fsc.fuelLeverInverted; return true; }
     return false;
+}
+
+static bool isZiboPluginLoaded() {
+    return XPLMFindPluginBySignature("zibomod.by.Zibo") != XPLM_NO_PLUGIN_ID;
+}
+
+static bool datarefsAvailable(std::initializer_list<const char*> paths) {
+    for (const char* path : paths) {
+        if (path == nullptr || XPLMFindDataRef(path) == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool commandsAvailable(std::initializer_list<const char*> paths) {
+    for (const char* path : paths) {
+        if (path == nullptr || XPLMFindCommand(path) == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool profileLooksLikeZibo(const FscProfileRuntime& runtime, const std::string& path) {
+    const auto containsZibo = [](const std::string& text) {
+        return toLowerCopy(text).find("zibo") != std::string::npos;
+    };
+    if (containsZibo(runtime.profileId) || containsZibo(runtime.name) || containsZibo(path)) {
+        return true;
+    }
+    for (const auto& mapping : runtime.axes) {
+        if (!mapping.defined) {
+            continue;
+        }
+        for (const auto& target : mapping.targets) {
+            if (target.path.rfind("laminar/B738/", 0) == 0) {
+                return true;
+            }
+        }
+    }
+    for (const auto& mapping : runtime.switches) {
+        auto actionLooksLikeZibo = [](const std::vector<FscAction>& actions) {
+            for (const auto& action : actions) {
+                if (action.path.rfind("laminar/B738/", 0) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (actionLooksLikeZibo(mapping.pressActions) ||
+            actionLooksLikeZibo(mapping.releaseActions) ||
+            actionLooksLikeZibo(mapping.onActions) ||
+            actionLooksLikeZibo(mapping.offActions) ||
+            actionLooksLikeZibo(mapping.cwActions) ||
+            actionLooksLikeZibo(mapping.ccwActions)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static FscAircraftReadinessProbe probeFscAircraftReadiness(const FscProfileRuntime& runtime,
+                                                           const std::string& path) {
+    FscAircraftReadinessProbe probe;
+    probe.tailnum = readTailnum();
+    probe.profileLooksLikeZibo = profileLooksLikeZibo(runtime, path);
+    if (!probe.profileLooksLikeZibo) {
+        return probe;
+    }
+
+    probe.ziboPluginPresent = isZiboPluginLoaded();
+    probe.representativeCommandsReady = commandsAvailable({
+        "laminar/B738/autopilot/left_toga_press",
+        "laminar/B738/push_button/flaps_0",
+        "laminar/B738/push_button/park_brake_on_off",
+    });
+    probe.representativeDatarefsReady = datarefsAvailable({
+        "laminar/B738/axis/throttle1",
+        "laminar/B738/engine/thrust12_leveler",
+        "laminar/B738/electric/batbus_status",
+    });
+    return probe;
+}
+
+static std::string formatFscReadinessProbe(const FscAircraftReadinessProbe& probe) {
+    std::ostringstream oss;
+    oss << "tail=" << (probe.tailnum.empty() ? "<none>" : probe.tailnum)
+        << ", zibo_profile=" << bool01(probe.profileLooksLikeZibo)
+        << ", zibo_plugin=" << bool01(probe.ziboPluginPresent)
+        << ", commands=" << bool01(probe.representativeCommandsReady)
+        << ", datarefs=" << bool01(probe.representativeDatarefsReady);
+    return oss.str();
 }
 
 static std::optional<FscAxisId> axisIdFromString(const std::string& s) {
@@ -3444,10 +3561,20 @@ static bool refreshFscProfile(bool logMissing) {
     g_fscProfileId = g_fscProfileRuntime.profileId;
     g_fscProfilePath = match->path;
 
+    const FscAircraftReadinessProbe readiness = probeFscAircraftReadiness(g_fscProfileRuntime, g_fscProfilePath);
+    if ((!readiness.aircraftConfirmed() || !readiness.representativeReady()) &&
+        g_fscProfileRuntime.sync.deferUntilDatarefs) {
+        logLine("FSC: profile '" + g_fscProfileId + "' waiting for readiness (" +
+                formatFscReadinessProbe(readiness) + "); deferring init.");
+        scheduleFscDeferredInit(std::chrono::seconds(g_fscProfileRuntime.sync.startupDelaySec));
+        return false;
+    }
+
     bool missingRefs = false;
     bool ready = resolveFscProfileBindings(logMissing, missingRefs);
     if (!ready && g_fscProfileRuntime.sync.deferUntilDatarefs) {
-        logLine("FSC: profile '" + g_fscProfileId + "' waiting for datarefs/commands; deferring init.");
+        logLine("FSC: profile '" + g_fscProfileId + "' waiting for datarefs/commands (" +
+                formatFscReadinessProbe(readiness) + "); deferring init.");
         scheduleFscDeferredInit(std::chrono::seconds(g_fscProfileRuntime.sync.startupDelaySec));
         return false;
     }
@@ -4333,6 +4460,19 @@ static void maybeRunFscDeferredInit() {
         return;
     }
 
+    const FscAircraftReadinessProbe readiness = probeFscAircraftReadiness(g_fscProfileRuntime, g_fscProfilePath);
+    if ((!readiness.aircraftConfirmed() || !readiness.representativeReady()) &&
+        g_fscProfileRuntime.sync.deferUntilDatarefs) {
+        if (++g_fscDeferredInit.attempts >= kMaxAttempts) {
+            g_fscDeferredInit.pending = false;
+            logLine("FSC deferred init: readiness probe still incomplete, giving up (" +
+                    formatFscReadinessProbe(readiness) + ").");
+            return;
+        }
+        g_fscDeferredInit.due = now + kRetryDelay;
+        return;
+    }
+
     bool missingRefs = false;
     bool ready = resolveFscProfileBindings(true, missingRefs);
     if (ready || !g_fscProfileRuntime.sync.deferUntilDatarefs) {
@@ -4351,7 +4491,8 @@ static void maybeRunFscDeferredInit() {
 
     if (++g_fscDeferredInit.attempts >= kMaxAttempts) {
         g_fscDeferredInit.pending = false;
-        logLine("FSC deferred init: bindings still missing, giving up.");
+        logLine("FSC deferred init: bindings still missing, giving up (" +
+                formatFscReadinessProbe(readiness) + ").");
         return;
     }
     g_fscDeferredInit.due = now + kRetryDelay;
