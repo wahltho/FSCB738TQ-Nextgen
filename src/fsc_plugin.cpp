@@ -7273,6 +7273,7 @@ static void fscPluginReceiveMessageCommon(int inMessage) {
 }  // namespace
 
 #if defined(FSC_EMBEDDED)
+extern "C" {
 void FscEmbedded_SetHostConfig(const FscEmbeddedHostConfig* config) {
     EmbeddedHostConfigState next;
     if (config) {
@@ -7325,6 +7326,7 @@ void FscEmbedded_ReloadPrefs() {
 
 void FscEmbedded_ToggleWindow() {
     toggleFscWindow();
+}
 }
 #endif
 
