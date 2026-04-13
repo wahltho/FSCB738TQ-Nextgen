@@ -375,6 +375,13 @@ struct FscPrev {
     int speedbrakePrev = -1;
 } g_fscPrev;
 
+struct FscFlapsStartupGuard {
+    bool active = false;
+    bool skippedBecauseSimNonZero = false;
+    float simHandleRatio = 0.0f;
+    std::string simHandleRatioSource;
+} g_fscFlapsStartupGuard;
+
 enum class FscCalibStep {
     SpeedbrakeDown,
     SpeedbrakeArmed,
@@ -3517,6 +3524,7 @@ static bool refreshFscProfile(bool logMissing) {
     g_fscProfileId.clear();
     g_fscProfilePath.clear();
     g_fscProfileRuntime = FscProfileRuntime{};
+    g_fscFlapsStartupGuard = FscFlapsStartupGuard{};
     for (auto& s : g_fscSwitchState) {
         s.known = false;
         s.value = false;
@@ -4548,6 +4556,10 @@ float flightLoopCallback(
             bool didAxisResync = false;
             if (g_fscAxisResyncPending.load() && now >= g_fscAxisResyncDue) {
                 resyncFscDetentAxes();
+                if (g_fscFlapsStartupGuard.active) {
+                    g_fscFlapsStartupGuard.active = false;
+                    logLine("FSC: flap startup guard released");
+                }
                 g_fscAxisResyncPending.store(false);
                 didAxisResync = true;
             }
@@ -5063,6 +5075,35 @@ static bool readDatarefValue(XPLMDataRef ref, int type, float& out, int index = 
     return false;
 }
 
+static bool readSimFlapHandleRatio(float& out, std::string& sourcePath) {
+    struct Candidate {
+        const char* path;
+        XPLMDataRef ref = nullptr;
+        int type = 0;
+    };
+    static std::array<Candidate, 3> candidates{{
+        {"sim/cockpit2/controls/flap_handle_request_ratio", nullptr, 0},
+        {"sim/cockpit2/controls/flap_ratio", nullptr, 0},
+        {"sim/cockpit2/controls/flap_handle_deploy_ratio", nullptr, 0},
+    }};
+
+    for (auto& candidate : candidates) {
+        if (!candidate.ref) {
+            candidate.ref = XPLMFindDataRef(candidate.path);
+            if (candidate.ref) {
+                candidate.type = XPLMGetDataRefTypes(candidate.ref);
+            }
+        }
+        float value = 0.0f;
+        if (readDatarefValue(candidate.ref, candidate.type, value)) {
+            out = value;
+            sourcePath = candidate.path;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool setDatarefValue(XPLMDataRef ref, int type, float value, int index = -1) {
     if (!ref) {
         return false;
@@ -5202,6 +5243,27 @@ static bool resyncFscLatchingInputs(const FscState& state) {
 static void scheduleFscAxisResync() {
     g_fscAxisResyncPending.store(true);
     g_fscAxisResyncSecondPending.store(false);
+    g_fscFlapsStartupGuard = FscFlapsStartupGuard{};
+    if (g_fscProfileRuntime.flaps.enabled && profileLooksLikeZibo(g_fscProfileRuntime, g_fscProfilePath)) {
+        float simHandleRatio = 0.0f;
+        std::string sourcePath;
+        if (readSimFlapHandleRatio(simHandleRatio, sourcePath)) {
+            g_fscFlapsStartupGuard.simHandleRatio = simHandleRatio;
+            g_fscFlapsStartupGuard.simHandleRatioSource = sourcePath;
+            if (std::fabs(simHandleRatio) > 0.001f) {
+                g_fscFlapsStartupGuard.skippedBecauseSimNonZero = true;
+                logLine("FSC: flap startup guard bypassed (" + sourcePath +
+                        "=" + std::to_string(simHandleRatio) + ")");
+            } else {
+                g_fscFlapsStartupGuard.active = true;
+                logLine("FSC: flap startup guard armed until initial axis resync (" + sourcePath +
+                        "=" + std::to_string(simHandleRatio) + ")");
+            }
+        } else {
+            g_fscFlapsStartupGuard.active = true;
+            logLine("FSC: flap startup guard armed until initial axis resync (sim flap handle readback unavailable)");
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(g_fscMutex);
         g_fscState.flaps = -1;
@@ -6137,36 +6199,38 @@ void processFscState(const FscState& state) {
     }
 
     if (g_fscProfileRuntime.flaps.enabled && state.flaps >= 0) {
-        int bestIdx = -1;
-        int bestDiff = 9999;
-        int bestValue = -1;
-        for (size_t i = 0; i < g_fscProfileRuntime.flaps.positions.size(); ++i) {
-            const auto& pos = g_fscProfileRuntime.flaps.positions[i];
-            int ref = 0;
-            if (!getPrefIntByKey(pos.sourceRef, ref)) {
-                continue;
-            }
-            int diff = std::abs(state.flaps - ref);
-            if (g_fscProfileRuntime.flaps.modeNearest) {
-                if (diff < bestDiff) {
-                    bestDiff = diff;
-                    bestIdx = static_cast<int>(i);
-                    bestValue = ref;
+        if (!g_fscFlapsStartupGuard.active) {
+            int bestIdx = -1;
+            int bestDiff = 9999;
+            int bestValue = -1;
+            for (size_t i = 0; i < g_fscProfileRuntime.flaps.positions.size(); ++i) {
+                const auto& pos = g_fscProfileRuntime.flaps.positions[i];
+                int ref = 0;
+                if (!getPrefIntByKey(pos.sourceRef, ref)) {
+                    continue;
                 }
-            } else {
-                if (diff <= pos.tolerance) {
-                    bestIdx = static_cast<int>(i);
-                    bestValue = ref;
-                    break;
+                int diff = std::abs(state.flaps - ref);
+                if (g_fscProfileRuntime.flaps.modeNearest) {
+                    if (diff < bestDiff) {
+                        bestDiff = diff;
+                        bestIdx = static_cast<int>(i);
+                        bestValue = ref;
+                    }
+                } else {
+                    if (diff <= pos.tolerance) {
+                        bestIdx = static_cast<int>(i);
+                        bestValue = ref;
+                        break;
+                    }
                 }
             }
-        }
-        if (bestIdx >= 0) {
-            const auto& pos = g_fscProfileRuntime.flaps.positions[static_cast<size_t>(bestIdx)];
-            if (!(g_fscProfileRuntime.flaps.modeNearest && bestDiff > pos.tolerance)) {
-                if (g_fscPrev.flaps != bestValue) {
-                    executeActions(pos.actions);
-                    g_fscPrev.flaps = bestValue;
+            if (bestIdx >= 0) {
+                const auto& pos = g_fscProfileRuntime.flaps.positions[static_cast<size_t>(bestIdx)];
+                if (!(g_fscProfileRuntime.flaps.modeNearest && bestDiff > pos.tolerance)) {
+                    if (g_fscPrev.flaps != bestValue) {
+                        executeActions(pos.actions);
+                        g_fscPrev.flaps = bestValue;
+                    }
                 }
             }
         }
