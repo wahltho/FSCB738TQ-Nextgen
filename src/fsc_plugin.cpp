@@ -681,13 +681,14 @@ static bool refreshStandaloneCoexistence(const char* reason) {
             const std::string peerEmbeddedVersion = extractEmbeddedFscVersionFromPeerDescription(description);
             bool comparable = false;
             const int cmp = compareVersions(kPluginVersion, peerEmbeddedVersion, comparable);
-            if (comparable && cmp < 0) {
+            if (comparable && cmp > 0) {
+                nextReason = "standalone_newer";
+            } else if (comparable) {
                 nextAllowsRun = false;
-                nextReason = "peer_embedded_newer";
-            } else if (!comparable) {
-                nextReason = "peer_enabled_version_unknown_keep_standalone";
+                nextReason = "peer_embedded_equal_or_newer";
             } else {
-                nextReason = "standalone_newer_or_equal";
+                nextAllowsRun = false;
+                nextReason = "peer_enabled_version_unknown";
             }
         }
     }
