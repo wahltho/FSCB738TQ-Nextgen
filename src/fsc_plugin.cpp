@@ -137,7 +137,7 @@ struct Prefs {
         float throttleUpdateRateSec = 0.07f;
     };
     struct FscSerial {
-        int baud = 115200;
+        int baud = 19200;
         int dataBits = 8;
         int stopBits = 1;
         FscParity parity = FscParity::None;
@@ -2759,7 +2759,7 @@ static Prefs::FscCalib defaultFscCalibForType(Prefs::FscType type) {
 
 static void normalizeFscSerial(Prefs::FscSerial& serial) {
     if (serial.baud <= 0) {
-        serial.baud = 115200;
+        serial.baud = 19200;
     }
     if (serial.dataBits < 5 || serial.dataBits > 8) {
         serial.dataBits = 8;
@@ -2815,7 +2815,7 @@ Prefs loadPrefs() {
     prefs.fsc.throttleSyncBand = 0.015f;
     prefs.fsc.debug = false;
     prefs.fsc.rawLog = false;
-    prefs.fsc.serial.baud = 115200;
+    prefs.fsc.serial.baud = 19200;
     prefs.fsc.serial.dataBits = 8;
     prefs.fsc.serial.stopBits = 1;
     prefs.fsc.serial.parity = Prefs::FscParity::None;
@@ -4649,7 +4649,7 @@ static speed_t fscBaudToTermios(int baud, bool& ok) {
 #endif
     }
     ok = false;
-    return B115200;
+    return B19200;
 }
 
 static void applyFscControlLines(int fd, const Prefs::FscSerial& serial) {
@@ -4703,7 +4703,7 @@ static intptr_t openFscPort(const std::string& port, const Prefs::FscSerial& ser
         return -1;
     }
 
-    int baud = serial.baud > 0 ? serial.baud : 115200;
+    int baud = serial.baud > 0 ? serial.baud : 19200;
     int dataBits = serial.dataBits;
     if (dataBits < 5 || dataBits > 8) {
         dataBits = 8;
@@ -4780,7 +4780,7 @@ static intptr_t openFscPort(const std::string& port, const Prefs::FscSerial& ser
     bool baudOk = true;
     speed_t baud = fscBaudToTermios(serial.baud, baudOk);
     if (!baudOk) {
-        logLine("FSC: unsupported baud " + std::to_string(serial.baud) + ", using 115200");
+        logLine("FSC: unsupported baud " + std::to_string(serial.baud) + ", using 19200");
     }
     cfsetispeed(&t, baud);
     cfsetospeed(&t, baud);

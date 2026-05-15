@@ -49,6 +49,24 @@ Menus:
 - Log location: `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/log/fscb738tq_nextgen.log`.
 
 ## FSC serial packet notes
+- Confirmed legacy baseline from the old FSC FS2020 desktop stack:
+  - `19200 8N1` is the historical link speed seen in both the shipped docs and the legacy motorized tooling.
+- RX packets are 2 bytes wide:
+  - wire byte 1 carries the packet family, plus the value MSB in bit 0.
+  - the logical packet address is `byte1 & 0x7E`.
+  - byte 2 carries the low 7 value bits.
+  - effective value: `((byte1 & 0x01) << 7) | (byte2 & 0x7F)`.
+- Confirmed / currently handled RX packet addresses:
+  - `0x10`: combined flap + trim-wheel packet for `PRO` and `MOTORIZED`.
+  - `0x12`: digital inputs (active low).
+  - `0x16`: stab-trim related switches.
+  - `0x20`: reverser 1.
+  - `0x22`: reverser 2.
+  - `0x24`: throttle 1.
+  - `0x26`: throttle 2.
+  - `0x2A`: flap input for `SEMIPRO` only.
+  - `0x2C`: speedbrake.
+- Legacy FS2020 material also showed `0x14` as an additional input address, likely flap-button related. Nextgen does not currently handle it explicitly, so treat `0x14` as an open `MOTORIZED` compatibility lead.
 - `0x2A`: flap input for `SEMIPRO` only. This is a raw flap-position value and is used by the flap-detent calibration flow.
 - `0x10`: combined flap + trim-wheel packet for `PRO` and `MOTORIZED`.
 - For `PRO`/`MOTORIZED`, the low nibble of the `0x10` packet is a 4-bit Gray-code flap detent, not a linear numeric value.
@@ -65,16 +83,29 @@ Menus:
 - Bits 4 and 5 of the `0x10` packet are used for trim-wheel quadrature decoding.
 - Important when reading RAW logs: bytes such as `0xAC 0x..` are `0x2C` packets after command masking and belong to speedbrake, not flaps.
 - The old Lua logic documented only the logical flap detent values (`0, 1, 2, 5, 10, 15, 25, 30, 40`), not the exact `0x10` nibble-to-detent mapping. Real RAW logs from a MOTORIZED unit were required to confirm the complete Gray-code sequence.
+- TX frames are 3 bytes wide: `cmd, address, value`.
+- Position-style TX writes use `0x8B`:
+  - logical target values are `0..255`.
+  - if the logical value is above `127`, the wire format sets the address LSB and sends only the low 7 bits in byte 3.
+  - current Nextgen `0x8B` base addresses in active use are:
+    - `0x00`: throttle motor 1 target
+    - `0x10`: throttle motor 2 target
+    - `0x20`: speedbrake motor target
+    - `0x30`: trim indicator target
+    - `0x60`: trim-wheel motor speed/config value
 - Reverse-engineered `MOTORIZED` output note from the legacy `win.xpl` plus `B738X.FSC_throttle_motorized.lua`:
   - digital outputs use a shared `0x87` frame, not separate independent lamp frames.
   - byte 2 is `0x10` with parking-brake light OFF and `0x11` with parking-brake light ON.
   - byte 3 is a shared digital mask.
   - current best-known legacy mask mapping is:
-    - `0x04` = park-brake solenoid
-    - `0x08` = speed-brake solenoid
+    - `0x04` = speed-brake solenoid
+    - `0x08` = park-brake solenoid
     - `0x10` = backlight
     - `0x20` = trim-wheel motor direction 1
     - `0x40` = trim-wheel motor direction 2
+- `0x93 0x00 0x10` is the current poll frame.
+- Other `0x93 0x00 xx` values are used as the current motor-power mask for motorized outputs.
+- Legacy FS2020 traces also showed startup/init-style `0x8B` writes on `0x40`, `0x50`, and `0x70`. Nextgen does not yet model those as a dedicated init sequence, so they remain an open `MOTORIZED` compatibility lead.
 - This `0x87` motorized output mapping is reverse-engineered behavior, not yet explicitly confirmed by the official FSC protocol text.
 
 ## Datarefs / outputs (FSC)
