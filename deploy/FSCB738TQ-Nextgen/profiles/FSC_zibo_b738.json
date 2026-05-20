@@ -3,7 +3,8 @@
   "name": "Zibo 737-800X",
   "version": 1,
   "aircraft_match": {
-    "tailnums": ["ZB738", "B738", "B736", "B737", "738", "B739"]
+    "tailnums": ["ZB738", "B738", "B736", "B737", "738", "B739"],
+    "plugin_signatures": ["zibomod.by.Zibo", "wahlthomod.by.wahltho"]
   },
   "axes": {
     "throttle1": {

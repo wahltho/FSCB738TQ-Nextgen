@@ -16,6 +16,7 @@ behavior into a profile JSON. Unknown keys are treated as errors.
   There is no manual override key; matching is tailnum-only.
   Tailnums are exact, case-sensitive matches (no regex).
   If there is no match, FSC outputs stay disabled.
+- `aircraft_match.plugin_signatures` is optional and is used only for runtime readiness checks.
 
 ## Supported Input IDs
 These IDs are the only valid keys under `axes` and `switches`.
@@ -51,7 +52,8 @@ These IDs are the only valid keys under `indicators`.
   "name": "Zibo 737-800X",
   "version": 1,
   "aircraft_match": {
-    "tailnums": ["ZB738", "B738"]
+    "tailnums": ["ZB738", "B738"],
+    "plugin_signatures": ["zibomod.by.Zibo", "wahlthomod.by.wahltho"]
   },
   "axes": { },
   "switches": { },
@@ -386,5 +388,6 @@ Behavior flags:
 - Required keys: `profile_id`, `name`, `version`, `aircraft_match.tailnums`.
 - All profiles must have unique `profile_id`.
 - `aircraft_match.tailnums` must not overlap across profiles.
+- `aircraft_match.plugin_signatures`, if present, must be an array of plugin signature strings.
 - Unknown keys or invalid types reject the profile.
 - Any validation error disables FSC outputs until fixed.

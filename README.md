@@ -45,6 +45,7 @@ Provided "as is", without warranty of any kind. Use at your own risk; no liabili
 ## Aircraft Profiles
 - Profiles live in `<X-Plane>/Resources/plugins/FSCB738TQ-Nextgen/profiles/`.
 - Matching is exact and case-sensitive via `aircraft_match.tailnums`.
+- Profiles can declare runtime plugin signatures via `aircraft_match.plugin_signatures`.
 - If no profile matches, FSC outputs stay disabled.
 - Schema: `Documentation/FSC_Aircraft_Profile_Schema.md`.
 

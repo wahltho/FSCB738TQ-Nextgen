@@ -70,6 +70,10 @@ namespace {
 
 static const char* kPluginVersion = PLUGIN_VERSION;
 static const char* kPeerCpflightSignature = PEER_CPFLIGHT_PLUGIN_SIGNATURE;
+static constexpr std::array<const char*, 2> kZiboCompatiblePluginSignatures{
+    "zibomod.by.Zibo",
+    "wahlthomod.by.wahltho",
+};
 constexpr auto kStandaloneCoexistencePollInterval = std::chrono::milliseconds(250);
 
 #if IBM
@@ -1197,6 +1201,7 @@ struct FscProfileRuntime {
     std::string name;
     double version = 0.0;
     std::vector<std::string> tailnums;
+    std::vector<std::string> pluginSignatures;
     std::array<FscAxisMapping, static_cast<size_t>(FscAxisId::Count)> axes{};
     std::array<FscSwitchMapping, static_cast<size_t>(FscSwitchId::Count)> switches{};
     std::array<FscIndicatorMapping, static_cast<size_t>(FscIndicatorId::Count)> indicators{};
@@ -1292,8 +1297,33 @@ static bool getPrefBoolByKey(const std::string& key, bool& out) {
     return false;
 }
 
-static bool isZiboPluginLoaded() {
-    return XPLMFindPluginBySignature("zibomod.by.Zibo") != XPLM_NO_PLUGIN_ID;
+static bool isKnownZiboCompatiblePluginSignature(const std::string& signature) {
+    return std::any_of(kZiboCompatiblePluginSignatures.begin(),
+                       kZiboCompatiblePluginSignatures.end(),
+                       [&](const char* known) { return signature == known; });
+}
+
+static bool isPluginSignatureLoaded(const std::string& signature) {
+    return !signature.empty() && XPLMFindPluginBySignature(signature.c_str()) != XPLM_NO_PLUGIN_ID;
+}
+
+static bool isAnyPluginSignatureLoaded(const std::vector<std::string>& signatures) {
+    return std::any_of(signatures.begin(), signatures.end(), isPluginSignatureLoaded);
+}
+
+static bool isZiboCompatiblePluginLoaded() {
+    return std::any_of(kZiboCompatiblePluginSignatures.begin(),
+                       kZiboCompatiblePluginSignatures.end(),
+                       [](const char* signature) {
+                           return XPLMFindPluginBySignature(signature) != XPLM_NO_PLUGIN_ID;
+                       });
+}
+
+static bool isProfileAircraftPluginLoaded(const FscProfileRuntime& runtime) {
+    if (!runtime.pluginSignatures.empty()) {
+        return isAnyPluginSignatureLoaded(runtime.pluginSignatures);
+    }
+    return isZiboCompatiblePluginLoaded();
 }
 
 static bool datarefsAvailable(std::initializer_list<const char*> paths) {
@@ -1318,6 +1348,11 @@ static bool profileLooksLikeZibo(const FscProfileRuntime& runtime, const std::st
     const auto containsZibo = [](const std::string& text) {
         return toLowerCopy(text).find("zibo") != std::string::npos;
     };
+    for (const auto& signature : runtime.pluginSignatures) {
+        if (isKnownZiboCompatiblePluginSignature(signature)) {
+            return true;
+        }
+    }
     if (containsZibo(runtime.profileId) || containsZibo(runtime.name) || containsZibo(path)) {
         return true;
     }
@@ -1361,7 +1396,7 @@ static FscAircraftReadinessProbe probeFscAircraftReadiness(const FscProfileRunti
         return probe;
     }
 
-    probe.ziboPluginPresent = isZiboPluginLoaded();
+    probe.ziboPluginPresent = isProfileAircraftPluginLoaded(runtime);
     probe.representativeCommandsReady = commandsAvailable({
         "laminar/B738/autopilot/left_toga_press",
         "laminar/B738/push_button/flaps_0",
@@ -1827,6 +1862,33 @@ static bool readNumberField(const JsonValue& obj,
         return false;
     }
     out = v->numberValue;
+    return true;
+}
+
+static bool readStringArrayField(const JsonValue& obj,
+                                 const std::string& key,
+                                 bool required,
+                                 std::vector<std::string>& out,
+                                 const std::string& ctx,
+                                 std::vector<std::string>& errors) {
+    const JsonValue* v = jsonGet(obj, key);
+    if (!v) {
+        if (required) {
+            profileError(errors, ctx + ": missing key '" + key + "'");
+        }
+        return false;
+    }
+    if (v->type != JsonValue::Type::Array) {
+        profileError(errors, ctx + ": key '" + key + "' must be array");
+        return false;
+    }
+    for (const auto& item : v->arrayValue) {
+        if (item.type != JsonValue::Type::String) {
+            profileError(errors, ctx + ": key '" + key + "' entries must be strings");
+        } else {
+            out.push_back(item.stringValue);
+        }
+    }
     return true;
 }
 
@@ -2426,19 +2488,14 @@ static bool parseFscProfile(const JsonValue& root,
 
     const JsonValue* match = requireField(root, "aircraft_match", "profile", errors);
     if (match && match->type == JsonValue::Type::Object) {
-        checkAllowedKeys(*match, {"tailnums"}, "profile.aircraft_match", errors);
-        const JsonValue* tailnums = jsonGet(*match, "tailnums");
-        if (!tailnums || tailnums->type != JsonValue::Type::Array || tailnums->arrayValue.empty()) {
+        checkAllowedKeys(*match, {"tailnums", "plugin_signatures"}, "profile.aircraft_match", errors);
+        bool tailnumsRead = readStringArrayField(*match, "tailnums", true, out.tailnums,
+                                                 "profile.aircraft_match", errors);
+        if (tailnumsRead && out.tailnums.empty()) {
             profileError(errors, "profile.aircraft_match.tailnums must be non-empty array");
-        } else {
-            for (const auto& v : tailnums->arrayValue) {
-                if (v.type != JsonValue::Type::String) {
-                    profileError(errors, "profile.aircraft_match.tailnums entries must be strings");
-                } else {
-                    out.tailnums.push_back(v.stringValue);
-                }
-            }
         }
+        readStringArrayField(*match, "plugin_signatures", false, out.pluginSignatures,
+                             "profile.aircraft_match", errors);
     } else if (match) {
         profileError(errors, "profile.aircraft_match must be object");
     }

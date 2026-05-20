@@ -135,6 +135,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 
 **Selection (current behavior)**
 - Each profile contains `aircraft_match.tailnums`, an exact, case-sensitive list.
+- Profiles may also contain `aircraft_match.plugin_signatures` for runtime readiness checks.
 - The active aircraft tail number comes from `sim/aircraft/view/acf_tailnum`.
 - A profile is applied only when the tail number matches exactly.
 - If there is no match, FSC outputs stay disabled.
@@ -152,7 +153,7 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 - `profile_id` (string): unique identifier used in logs and diagnostics.
 - `name` (string): human-friendly profile name.
 - `version` (number): schema version for future migrations.
-- `aircraft_match` (object): match rules; currently only `tailnums`.
+- `aircraft_match` (object): match rules and optional runtime plugin signatures.
 - `axes` (object): analog inputs mapped to datarefs.
 - `switches` (object): discrete inputs mapped to commands or datarefs.
 - `indicators` (object): datarefs mapped to LEDs or lamps.
@@ -162,6 +163,8 @@ logged; set `fsc.debug=1` for detailed mapping logs.
 
 **aircraft_match**
 - `tailnums`: array of exact strings, case-sensitive.
+- `plugin_signatures`: optional array of accepted X-Plane plugin signatures for readiness checks.
+  The shipped Zibo-compatible profile accepts both `zibomod.by.Zibo` and `wahlthomod.by.wahltho`.
 - Keep it minimal; do not use regex fields.
 
 **Serial settings**
